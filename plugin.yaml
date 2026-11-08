@@ -1,0 +1,83 @@
+name: freebusy
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: "Email meeting scheduling that never reveals a calendar and never invents a time zone. Offers come from free/busy only, every slot is held before it is offered, and a time is never shown in a zone the other person did not give. Fixture mode needs no accounts."
+author: David Tsai
+license: MIT
+kind: standalone
+platforms:
+  - linux
+  - macos
+tags: [scheduling, email, calendar, time-zones]
+requires_hermes: ">=0.22.5"
+provides_tools:
+  - schedule_parse
+  - schedule_offer
+  - schedule_check
+  - schedule_book
+  - schedule_holds
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+requires_env: []
+config_schema:
+  mode:
+    type: str
+    choices: [fixture, google_workspace]
+    default: fixture
+    label: Adapter
+    description: "fixture runs on demo data and touches nothing. google_workspace goes through the bundled google-workspace skill (not wired in 0.1.0)."
+  owner_name:
+    type: str
+    default: ""
+    label: Owner name
+    description: "Shown in the signature: AI assistant to <name>."
+  home_zone:
+    type: str
+    default: America/Los_Angeles
+    label: Home time zone
+    description: "IANA zone. Every offer is shown in this zone; a second zone only when the person stated theirs."
+  owner_addresses:
+    type: list
+    default: []
+    description: "The owner's own addresses. Only mail from these carries authority."
+  agent_address:
+    type: str
+    default: ""
+    description: "The address the assistant works from (plus address, marked same address, or alias)."
+  write_calendar:
+    type: str
+    default: ""
+    description: "The one calendar the plugin may write to."
+  read_calendars:
+    type: list
+    default: []
+    description: "Calendars read as free or busy only."
+  groups:
+    type: dict
+    default: {}
+    description: "Per-group windows by weekday, buffer, default length, earliest day out, horizon, tier."
+  allowlist:
+    type: dict
+    default: {}
+    description: "Sender address to tier (0 observe, 1 offer, 2 book)."
+  auto_book:
+    type: bool
+    default: true
+    label: Book on a fitting stated time
+    description: "On: an introduced sender's fitting pick is booked at once and the owner is told. Off: the owner approves first with /schedule approve."
+  max_len_without_owner_min:
+    type: int
+    default: 59
+    description: "Meetings longer than this go to the owner before anything is offered."
+  notice_hours:
+    type: int
+    default: 24
+  hold_expiry_hours:
+    type: int
+    default: 48
+  max_open_holds:
+    type: int
+    default: 12
