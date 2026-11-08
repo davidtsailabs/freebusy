@@ -55,7 +55,7 @@ def _build_runtime(ctx) -> dict:
     data = _data_dir(ctx)
     mode = _cfg(ctx, "mode", "fixture")
     if mode == "fixture" or not _cfg(ctx, "owner_name", ""):
-        profile, cal, mail, people = fx.profile(), fx.FixtureCalendar(), fx.FixtureMail(), dict(fx.PEOPLE)
+        profile, cal, mail, people = fx.profile(), fx.FixtureCalendar(), fx.FixtureMail(), fx.people()
     else:
         profile = OwnerProfile(name=_cfg(ctx, "owner_name", ""), home_zone=_cfg(ctx, "home_zone", "America/Los_Angeles"),
                                agent_address=_cfg(ctx, "agent_address", ""), owner_addresses=list(_cfg(ctx, "owner_addresses", [])),
@@ -260,7 +260,7 @@ def register(ctx) -> None:
         _RT = {"profile": fx.profile(), "ledger": HoldLedger(), "mode": "fixture"}
         _RT["gate"] = Gate(_RT["profile"], _RT["ledger"])
         _RT["mail"], _RT["cal"] = fx.FixtureMail(), fx.FixtureCalendar()
-        _RT["scheduler"] = Scheduler(_RT["profile"], _RT["cal"], _RT["mail"], _RT["ledger"], _RT["gate"], dict(fx.PEOPLE))
+        _RT["scheduler"] = Scheduler(_RT["profile"], _RT["cal"], _RT["mail"], _RT["ledger"], _RT["gate"], fx.people())
 
     tools = (("schedule_parse", schemas.SCHEDULE_PARSE, schedule_parse), ("schedule_offer", schemas.SCHEDULE_OFFER, schedule_offer),
              ("schedule_check", schemas.SCHEDULE_CHECK, schedule_check), ("schedule_book", schemas.SCHEDULE_BOOK, schedule_book),

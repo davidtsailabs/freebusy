@@ -13,7 +13,7 @@ from .policy import Gate
 def _fresh():
     p, cal, mail, led = fx.profile(), fx.FixtureCalendar(), fx.FixtureMail(), HoldLedger()
     gate = Gate(p, led)
-    return Scheduler(p, cal, mail, led, gate, dict(fx.PEOPLE)), cal, mail, led, gate
+    return Scheduler(p, cal, mail, led, gate, fx.people()), cal, mail, led, gate
 
 
 def run_scenes(quiet: bool = False) -> str:

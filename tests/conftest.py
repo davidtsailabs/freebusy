@@ -18,5 +18,5 @@ def world(tmp_path):
     profile, cal, mail = fx.profile(), fx.FixtureCalendar(), fx.FixtureMail()
     ledger = HoldLedger(tmp_path / "holds.json")
     gate = Gate(profile, ledger, tmp_path / "audit.jsonl")
-    sched = Scheduler(profile, cal, mail, ledger, gate, dict(fx.PEOPLE))
+    sched = Scheduler(profile, cal, mail, ledger, gate, fx.people())
     return {"profile": profile, "cal": cal, "mail": mail, "ledger": ledger, "gate": gate, "sched": sched, "now": fx.NOW}

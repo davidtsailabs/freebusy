@@ -8,6 +8,7 @@ threads matching the demo scenes.
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -34,6 +35,11 @@ PEOPLE = {
                       zone="America/Los_Angeles", zone_source="stated", stated_at=NOW.isoformat()),
     "owen": Person(id="owen", name="Owen Hale", emails=["owen@brightpathcro.example"], stated_at=NOW.isoformat()),
 }
+
+
+def people() -> dict[str, Person]:
+    """Fresh copies every time, so one run's stated zones never leak into the next."""
+    return {k: copy.deepcopy(v) for k, v in PEOPLE.items()}
 
 
 def profile() -> OwnerProfile:
