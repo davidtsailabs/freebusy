@@ -1,6 +1,6 @@
 """freebusy plugin: registration with Hermes.
 
-Wires five tools, three hooks and three slash commands. Every hook accepts
+Wires six tools, four hooks and three slash commands. Every hook accepts
 **kwargs and never raises. Anything the host context lacks is skipped
 quietly. In fixture mode nothing here reaches a network or a credential.
 """
@@ -24,7 +24,7 @@ from freebusy.engine import Scheduler  # noqa: E402
 from freebusy.holds import HoldLedger  # noqa: E402
 from freebusy.offer import build_offer, check_proposed  # noqa: E402
 from freebusy.ontology import OwnerProfile, Slot, from_dict, to_dict  # noqa: E402
-from freebusy.parse import Email, parse_email  # noqa: E402
+from freebusy.parse import Email, parse_email, parse_instruction  # noqa: E402
 from freebusy.policy import Gate  # noqa: E402
 from freebusy.zones import detect_zone, label_for  # noqa: E402
 from freebusy import schemas  # noqa: E402
@@ -33,13 +33,21 @@ logger = logging.getLogger(__name__)
 
 _RT: dict = {}   # runtime: profile, ledger, gate, scheduler, data_dir
 
+RESUME_RULE = "freebusy-resume"          # rule_key prefix for the Hermes approval of a schedule_resume call
+_HUMAN_YES = {"once", "session", "always"}
+
 
 def _data_dir(ctx) -> Path:
+    """FREEBUSY_DATA_DIR wins (tests and the demo set it), then the host's plugin data dir, then ~/.freebusy."""
+    if os.environ.get("FREEBUSY_DATA_DIR"):
+        base = Path(os.environ["FREEBUSY_DATA_DIR"])
+        base.mkdir(parents=True, exist_ok=True)
+        return base
     try:
         from plugins.plugin_storage import plugin_data_dir  # type: ignore
         return Path(plugin_data_dir("freebusy"))
     except Exception:
-        base = Path(os.environ.get("FREEBUSY_DATA_DIR", Path.home() / ".freebusy"))
+        base = Path.home() / ".freebusy"
         base.mkdir(parents=True, exist_ok=True)
         return base
 
@@ -168,13 +176,74 @@ def schedule_holds(args: dict, **kwargs) -> str:
         return json.dumps({"error": str(exc)})
 
 
+def _resume_rule_key(thread_id: str, instruction: str) -> str:
+    """One approval per waiting request and instruction, so an "always" answer never covers a later gate."""
+    p = _rt()["scheduler"].pending.get(thread_id)
+    kind = parse_instruction(instruction or "")
+    what = f"{kind[0]}{kind[1] or ''}" if kind else "-"
+    return f"{RESUME_RULE}:{thread_id}:{p.request.message_id if p else '-'}:{what}"
+
+
+def schedule_resume(args: dict, **kwargs) -> str:
+    """Runs only after the human approved it in Hermes: pre_tool_call returns {"action": "approve"} for this tool,
+    and post_approval_response records the person's yes. Without that record nothing resumes."""
+    try:
+        rt = _rt()
+        tid, instruction = args.get("thread_id", ""), args.get("instruction", "")
+        seen = rt.setdefault("approvals", {}).pop(_resume_rule_key(tid, instruction), None)
+        if not seen:
+            return json.dumps({"blocked": "the owner's approval was not observed; ask the owner to use /schedule "
+                                          f"{tid} <instruction> or to reply to the note by email"})
+        act = rt["scheduler"].resume(tid, instruction, _now(),
+                                     approved_by=f"owner via Hermes approval ({seen.get('surface', '?')}, {seen.get('choice')})")
+        return json.dumps({"kind": act.kind, "reason": act.reason, "text": act.text or act.owner_note or ""})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+
 # ---- hooks ----------------------------------------------------------------------
 
 def _pre_tool_call(tool_name: str = "", args: dict | None = None, task_id: str = "", **kwargs):
     try:
+        if tool_name == "schedule_resume":
+            return _resume_directive(args or {})
         return _rt()["gate"].pre_tool_call(tool_name=tool_name, args=args or {}, task_id=task_id)
     except Exception as exc:
         return {"action": "block", "message": f"freebusy policy could not decide, so the call is blocked: {exc}"}
+
+
+def _resume_directive(args: dict) -> dict:
+    """schedule_resume always goes to the human: block when nothing waits, else ask Hermes for approval."""
+    rt = _rt()
+    tid, instruction = args.get("thread_id", ""), args.get("instruction", "")
+    p = rt["scheduler"].pending.get(tid)
+    if p is None:
+        verdict = {"action": "block", "message": f"nothing on {tid} is waiting for the owner"}
+    elif not parse_instruction(instruction):
+        from freebusy.engine import accepted_instructions
+        verdict = {"action": "block", "message": accepted_instructions(tid, p)}
+    else:
+        verdict = {"action": "approve", "rule_key": _resume_rule_key(tid, instruction),
+                   "message": f"freebusy: {p.detail} on {tid}. Owner instruction: '{instruction.strip()[:60]}'"}
+    rt["gate"].audit({"tool": "schedule_resume", "thread": tid, "verdict": verdict["action"], "reason": verdict["message"]})
+    return verdict
+
+
+def _post_approval_response(pattern_key: str = "", choice: str = "", surface: str = "", decided_by: str = "", **kwargs):
+    """Record a person's yes to a schedule_resume approval. Smart (model) approvals do not count."""
+    try:
+        key = str(pattern_key or "")
+        if not key.startswith(f"plugin_rule:{RESUME_RULE}:"):
+            return None
+        rule = key[len("plugin_rule:"):]
+        human_yes = choice in _HUMAN_YES and not decided_by
+        if human_yes:
+            _rt().setdefault("approvals", {})[rule] = {"choice": choice, "surface": surface}
+        _rt()["gate"].audit({"approval": rule, "choice": choice, "surface": surface, "decided_by": decided_by or "human",
+                             "counted": human_yes})
+    except Exception as exc:  # observers never raise
+        logger.debug("freebusy post_approval_response: %s", exc)
+    return None
 
 
 def _post_tool_call(tool_name: str = "", args: dict | None = None, result: str = "", task_id: str = "", duration_ms: int = 0, **kwargs):
@@ -200,6 +269,9 @@ def _pre_llm_call(session_id: str = "", user_message: str = "", **kwargs):
         zones = [(p.name, label_for(p.zone)) for p in rt["scheduler"].people.values() if p.zone and p.zone_source == "stated"]
         if zones:
             lines.append("- stated zones: " + ", ".join(f"{n} {z}" for n, z in zones))
+        for tid, p in rt["scheduler"].pending.items():
+            lines.append(f"- waiting on the owner: {tid} ({p.reason}: {p.detail}); the owner clears it with "
+                         f"schedule_resume, /schedule {tid} <instruction>, or an email reply")
         return {"context": "\n".join(lines)}
     except Exception as exc:
         logger.debug("freebusy pre_llm_call: %s", exc)
@@ -208,26 +280,38 @@ def _pre_llm_call(session_id: str = "", user_message: str = "", **kwargs):
 
 # ---- slash commands -----------------------------------------------------------
 
+def _show(act) -> str:
+    return f"{act.kind}: {act.reason}\n\n{act.text or act.owner_note or ''}".rstrip()
+
+
 def _cmd_schedule(raw_args: str = "", **kwargs) -> str:
     rt = _rt()
     parts = (raw_args or "").split()
     if not parts or parts[0] == "help":
-        return ("/schedule demo            run the six fixture scenes\n"
-                "/schedule profile         show the owner profile\n"
-                "/schedule approve <thread> approve a booking the gate held for you\n"
-                "/schedule run <scene>     handle one fixture thread")
+        return ("/schedule demo                   run the fixture scenes\n"
+                "/schedule profile                show the owner profile\n"
+                "/schedule waiting                threads waiting on you, and why\n"
+                "/schedule approve <thread>       approve what is waiting and finish it now\n"
+                "/schedule <thread> <instruction> approve | yes | go ahead | offer <minutes> | decline\n"
+                "/schedule run <scene>            handle one fixture thread")
     if parts[0] == "profile":
         return json.dumps(to_dict(rt["profile"]), indent=1)
+    if parts[0] == "waiting":
+        pend = rt["scheduler"].pending
+        return "\n".join(f"{t}  {p.reason}: {p.detail}" for t, p in pend.items()) or "nothing is waiting on you"
     if parts[0] == "approve" and len(parts) > 1:
-        rt["gate"].facts(parts[1]).owner_approved = True
-        rt["gate"].audit({"thread": parts[1], "owner_approved": True})
-        return f"approved: {parts[1]} may be booked"
+        if parts[1] in rt["scheduler"].pending:
+            return _show(rt["scheduler"].resume(parts[1], "approve", _now(), approved_by="owner via /schedule approve"))
+        rt["gate"].facts(parts[1]).owner_approved = True       # nothing waits yet: approve the thread's booking ahead of time
+        rt["gate"].audit({"thread": parts[1], "owner_approved": True, "approved_by": "owner via /schedule approve"})
+        return f"approved: nothing was waiting on {parts[1]}; its booking may go ahead when they pick"
     if parts[0] == "demo":
         from freebusy.demo import run_scenes
         return run_scenes(quiet=True)
     if parts[0] == "run" and len(parts) > 1 and rt["mode"] == "fixture":
-        act = rt["scheduler"].handle(rt["mail"].thread(parts[1]), _now())
-        return f"{act.kind}: {act.reason}\n\n{act.text or act.owner_note or ''}"
+        return _show(rt["scheduler"].handle(rt["mail"].thread(parts[1]), _now()))
+    if len(parts) > 1 and parts[0] not in ("demo", "run", "approve"):
+        return _show(rt["scheduler"].resume(parts[0], " ".join(parts[1:]), _now(), approved_by="owner via /schedule"))
     return "unknown subcommand; try /schedule help"
 
 
@@ -264,7 +348,8 @@ def register(ctx) -> None:
 
     tools = (("schedule_parse", schemas.SCHEDULE_PARSE, schedule_parse), ("schedule_offer", schemas.SCHEDULE_OFFER, schedule_offer),
              ("schedule_check", schemas.SCHEDULE_CHECK, schedule_check), ("schedule_book", schemas.SCHEDULE_BOOK, schedule_book),
-             ("schedule_holds", schemas.SCHEDULE_HOLDS, schedule_holds))
+             ("schedule_holds", schemas.SCHEDULE_HOLDS, schedule_holds),
+             ("schedule_resume", schemas.SCHEDULE_RESUME, schedule_resume))
     if hasattr(ctx, "register_tool"):
         for name, schema, handler in tools:
             try:
@@ -272,13 +357,14 @@ def register(ctx) -> None:
             except Exception as exc:
                 logger.warning("freebusy: could not register %s: %s", name, exc)
     if hasattr(ctx, "register_hook"):
-        for hook, fn in (("pre_tool_call", _pre_tool_call), ("post_tool_call", _post_tool_call), ("pre_llm_call", _pre_llm_call)):
+        for hook, fn in (("pre_tool_call", _pre_tool_call), ("post_tool_call", _post_tool_call), ("pre_llm_call", _pre_llm_call),
+                         ("post_approval_response", _post_approval_response)):
             try:
                 ctx.register_hook(hook, fn)
             except Exception as exc:
                 logger.warning("freebusy: could not register hook %s: %s", hook, exc)
     if hasattr(ctx, "register_command"):
-        for name, fn, desc in (("schedule", _cmd_schedule, "Scheduling assistant: demo, profile, approve"),
+        for name, fn, desc in (("schedule", _cmd_schedule, "Scheduling assistant: demo, profile, waiting, approve, <thread> <instruction>"),
                                ("holds", _cmd_holds, "Open slot holds"), ("zones", _cmd_zones, "Stated time zones, or test a phrase")):
             try:
                 ctx.register_command(name, handler=fn, description=desc)

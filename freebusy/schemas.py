@@ -65,3 +65,14 @@ SCHEDULE_HOLDS = {
                    "thread_id": _THREAD, "person_id": {"type": "string"}, "slots": {"type": "array", "items": _SLOT}},
                    "required": ["action"]},
 }
+
+SCHEDULE_RESUME = {
+    "name": "schedule_resume",
+    "description": ("Carry out the owner's instruction on a thread that is waiting for them (a meeting of 60 minutes or "
+                    "more, an unknown sender, a time outside the windows, a booking that needs approval, or nothing fits). "
+                    "Instructions: approve (or yes, go ahead), offer <minutes>, decline. Use it only when the owner has "
+                    "told you what to do; Hermes asks the owner to confirm every call, and nothing happens without that yes."),
+    "parameters": {"type": "object", "properties": {"thread_id": _THREAD,
+                   "instruction": {"type": "string", "description": "approve | yes | go ahead | offer <minutes> | decline"}},
+                   "required": ["thread_id", "instruction"]},
+}

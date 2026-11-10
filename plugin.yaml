@@ -17,10 +17,12 @@ provides_tools:
   - schedule_check
   - schedule_book
   - schedule_holds
+  - schedule_resume
 provides_hooks:
   - pre_tool_call
   - post_tool_call
   - pre_llm_call
+  - post_approval_response
 requires_env: []
 config_schema:
   mode:
@@ -67,7 +69,7 @@ config_schema:
     type: bool
     default: true
     label: Book on a fitting stated time
-    description: "On: an introduced sender's fitting pick is booked at once and the owner is told. Off: the owner approves first with /schedule approve."
+    description: "On: an introduced sender's fitting pick is booked at once and the owner is told. Off: the owner approves first (/schedule approve, an email reply, or a Hermes approval), and the booking then goes ahead in the same run."
   max_len_without_owner_min:
     type: int
     default: 59

@@ -139,6 +139,43 @@ def handoff_trigger(email: Email, profile: OwnerProfile) -> Optional[str]:
     return None
 
 
+def agent_on_recipients(email: Email, profile: OwnerProfile) -> bool:
+    """The agent's address is in To or Cc (a forward to the agent puts it in To)."""
+    agent = profile.agent_address.lower()
+    return bool(agent) and agent in {a.lower() for a in [*email.to, *email.cc] if a}
+
+
+def owner_at_agent(own_text: str) -> bool:
+    return bool(re.search(r"(^|\s)@agent\b", own_text or "", re.IGNORECASE))
+
+
+_STOP_RE = re.compile(r"(^|\s)(@agent\s*[,:]?\s*stop|agent\s*,\s*stop)\b", re.IGNORECASE)
+
+
+def owner_says_stop(own_text: str) -> bool:
+    """"@agent stop" or "agent, stop" in the owner's own (un-quoted) text."""
+    return bool(_STOP_RE.search(own_text or ""))
+
+
+_INSTRUCTIONS = (("approve", re.compile(r"^(?:approved?|yes|go ahead)\b", re.IGNORECASE)),
+                 ("offer", re.compile(r"^offer\s+(\d{1,3})\b", re.IGNORECASE)),
+                 ("decline", re.compile(r"^decline\b", re.IGNORECASE)))
+
+
+def parse_instruction(text: str) -> Optional[tuple[str, Optional[int]]]:
+    """The owner's instruction on a waiting thread, read from the start of the text.
+
+    "approve" / "yes" / "go ahead" -> ("approve", None); "offer 30" -> ("offer", 30);
+    "decline" -> ("decline", None). A leading "@agent" is allowed. Anything else -> None.
+    """
+    t = re.sub(r"^\s*@agent\b[\s,:]*", "", (text or "").strip(), flags=re.IGNORECASE).strip()
+    for kind, rx in _INSTRUCTIONS:
+        m = rx.match(t)
+        if m:
+            return kind, (int(m.group(1)) if kind == "offer" else None)
+    return None
+
+
 _LEN_RE = re.compile(r"\b(\d{1,3})\s*(?:-|\s)?\s*(?:min|mins|minutes?)\b|\b(an|one|1|half an|two|2)\s+hours?\b", re.IGNORECASE)
 
 

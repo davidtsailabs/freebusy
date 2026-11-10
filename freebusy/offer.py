@@ -74,11 +74,13 @@ def free_ranges_for_day(day: datetime, group: Group, busy: list[Slot], buffer_mi
 
 def build_offer(profile: OwnerProfile, group: Group, busy: list[Slot], ledger: HoldLedger, thread_id: str,
                 now: datetime, length_min: Optional[int] = None, person_zone: Optional[str] = None,
-                horizon_days: Optional[int] = None, earliest_days_out: Optional[int] = None) -> OfferResult:
+                horizon_days: Optional[int] = None, earliest_days_out: Optional[int] = None,
+                owner_approved_length: bool = False) -> OfferResult:
+    """``owner_approved_length``: the owner's own word set this length, so 60 minutes or more is offered as asked."""
     result = OfferResult()
     length = length_min or group.default_len_min
     result.length_min = length
-    if length > profile.max_len_without_owner_min:
+    if length > profile.max_len_without_owner_min and not owner_approved_length:
         result.needs_owner.append(f"{length}-minute meeting requested; the owner approves anything of 60 minutes or more")
         length = group.default_len_min
         result.notes.append(f"offering {length}-minute slots meanwhile")

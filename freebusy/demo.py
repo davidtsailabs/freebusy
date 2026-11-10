@@ -1,4 +1,4 @@
-"""Print the six demo scenes on fixture data. ``python -m freebusy.demo``."""
+"""Print the eight demo scenes on fixture data. ``python -m freebusy.demo``."""
 
 from __future__ import annotations
 
@@ -70,6 +70,27 @@ def run_scenes(quiet: bool = False) -> str:
     say("\n  And the Booked note from scene 2:")
     say(f"  subject \"{b.owner_subject}\"")
     say("  " + b.owner_note.replace("\n", "\n  "))
+
+    say("\nScene 7. A fresh introduction: the owner cc's the agent, the agent offers at once")
+    s7, _, mail7, led7, _ = _fresh()
+    intro = mail7.thread("fresh-intro")[0]
+    say(f"  Dana to Nora, cc the agent: \"{intro.body.splitlines()[0]}\"")
+    g = s7.handle(mail7.thread("fresh-intro"), fx.NOW)
+    say(f"  action: {g.kind} to {', '.join(mail7.sent[-1]['to'])} (Dana cc'd); {len(led7.for_thread('t13'))} slots held for t13")
+    say("  " + g.text.replace("\n", "\n  "))
+
+    say("\nScene 8. The owner clears a gate and the job finishes in the same run")
+    s8, _, mail8, led8, gate8 = _fresh()
+    h = s8.handle(mail8.thread("owner-notification"), fx.NOW)
+    say(f"  Priya asks for an hour: {h.kind}, \"{h.owner_subject}\"; waiting: {s8.pending['t6'].reason}")
+    reply = fx._mail("t6", 3, fx.OWNER, [fx.AGENT], [], "Re: Needs you", "approve\n\nOn Mon, the assistant wrote:\n> NEEDS YOU",
+                     "Mon, 09 Nov 2026 09:40:00 -0800", "Dana Whitfield")
+    say("  Dana replies to the note: \"approve\"")
+    i = s8.handle(mail8.thread("owner-notification") + [reply], fx.NOW)
+    resumed = [x for x in gate8.last if "resume" in x][-1]
+    say(f"  action: {i.kind} to {mail8.sent[-1]['to'][0]}; {len(i.slots)} slots of 60 minutes or more held for t6")
+    say(f"  audit: approved by {resumed['approved_by']}, instruction \"{resumed['resume']}\", result {resumed['result']}")
+    say("  " + i.text.replace("\n", "\n  "))
 
     text = "\n".join(out)
     if not quiet:

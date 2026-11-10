@@ -1,9 +1,9 @@
 """Demo data. No real calendars, no real people.
 
 Owner: Dana Whitfield, Pacific, three calendars (work, personal, family)
-read as free/busy, writes to work. Three counterparts in three zones. Two
-weeks of busy blocks from a fixed "now" so every run is the same. Six mail
-threads matching the demo scenes.
+read as free/busy, writes to work. Six counterparts, some with a stated zone and some without. Two
+weeks of busy blocks from a fixed "now" so every run is the same. Seven mail
+threads matching the demo scenes, plus two loop-guard threads.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ PEOPLE = {
     "marisol": Person(id="marisol", name="Marisol Vega", emails=["marisol@cascadehealth.example"],
                       zone="America/Los_Angeles", zone_source="stated", stated_at=NOW.isoformat()),
     "owen": Person(id="owen", name="Owen Hale", emails=["owen@brightpathcro.example"], stated_at=NOW.isoformat()),
+    "nora": Person(id="nora", name="Nora Lind", emails=["nora@fjordtx.example"], stated_at=NOW.isoformat()),  # zone never stated
 }
 
 
@@ -119,11 +120,11 @@ def _mail(thread: str, n: int, sender: str, to: list[str], cc: list[str], subjec
                  subject=subject, body=body, date=date, headers=headers or {}, sender_name=name)
 
 
-LUKAS, PRIYA, THEO, MARISOL, OWEN = (PEOPLE[k].emails[0] for k in ("lukas", "priya", "theo", "marisol", "owen"))
+LUKAS, PRIYA, THEO, MARISOL, OWEN, NORA = (PEOPLE[k].emails[0] for k in ("lukas", "priya", "theo", "marisol", "owen", "nora"))
 
 
 def threads() -> dict[str, list[Email]]:
-    """Six scenes. Keys are the scene names used by the demo and the tests."""
+    """The scenes. Keys are the scene names used by the demo and the tests."""
     t: dict[str, list[Email]] = {}
 
     # 1. Zurich, no zone given. The owner introduced the agent; Lukas proposes a bare time.
@@ -164,6 +165,11 @@ def threads() -> dict[str, list[Email]]:
               "Mon, 09 Nov 2026 09:20:00 -0800", "Dana Whitfield"),
         _mail("t6", 2, PRIYA, [AGENT], [OWNER], "Re: Deep dive", "Could we get an hour next week? I'm on Eastern time.\n\nPriya",
               "Mon, 09 Nov 2026 13:00:00 -0500", "Priya Natarajan"),
+    ]
+    # 7. A fresh introduction: the owner cc's the agent and nobody has asked yet. The agent offers straight away.
+    t["fresh-intro"] = [
+        _mail("t13", 1, OWNER, [NORA], [AGENT], "Intro: Nora and Dana",
+              "Nora, meet my assistant, cc'd, who will find us a time.\n\nDana", "Mon, 09 Nov 2026 08:45:00 -0800", "Dana Whitfield"),
     ]
     # Loop guards, for the tests: an auto-reply and our own mail.
     t["auto-reply"] = [

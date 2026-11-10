@@ -39,11 +39,16 @@ class ThreadFacts:
     authority: str = "unknown"
     tier: int = AuthorityTier.OBSERVE
     owner_approved: bool = False            # the owner said yes to this thread's booking
+    approved_len_min: int = 0               # the owner approved a meeting of up to this length
     offer_rounds: int = 0
 
 
-def block(message: str) -> dict:
-    return {"action": "block", "message": message}
+def block(message: str, code: str = "") -> dict:
+    """A veto Hermes understands. ``code`` is ours: it tells the engine which owner gate this is."""
+    out = {"action": "block", "message": message}
+    if code:
+        out["code"] = code
+    return out
 
 
 def redact(obj: Any) -> Any:
@@ -120,11 +125,12 @@ class Gate:
         if guests - t.participants:
             return block(f"attendee not on the thread: {', '.join(sorted(guests - t.participants))}")
         length = (slot.end_dt() - slot.start_dt()).total_seconds() / 60
-        needs_owner = length > self.profile.max_len_without_owner_min
+        needs_owner = length > self.profile.max_len_without_owner_min and length > t.approved_len_min
         if t.tier < AuthorityTier.BOOK and not t.owner_approved:
-            return block(f"tier {int(t.tier)} may offer but not book; the owner approves with /schedule approve {t.thread_id}")
+            return block(f"tier {int(t.tier)} may offer but not book; the owner approves with /schedule approve {t.thread_id}",
+                         code="approve_first")
         if needs_owner and not t.owner_approved:
-            return block(f"a {int(length)}-minute meeting needs the owner's approval before booking")
+            return block(f"a {int(length)}-minute meeting needs the owner's approval before booking", code="long_meeting")
         return None
 
     # -- audit ----------------------------------------------------------------

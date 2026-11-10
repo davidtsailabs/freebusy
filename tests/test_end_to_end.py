@@ -64,12 +64,15 @@ def test_owner_notified_for_an_hour(world):
     assert s.state("t6").status == ThreadStatus.AWAITING_OWNER.value
 
 
-def test_owner_writing_in_thread_hands_back(world):
-    s, mail = world["sched"], world["mail"]
+def test_owner_writing_without_the_agent_hands_back(world):
+    # Changed 2026-11-10 ("cc always means take it"): writing with the agent still cc'd no longer hands back;
+    # dropping the agent from the recipients does.
+    s, mail, led = world["sched"], world["mail"], world["ledger"]
     s.handle(mail.thread("zurich-no-zone"), fx.NOW)
-    owner = fx._mail("t1", 3, fx.OWNER, [fx.LUKAS], [fx.AGENT], "Re", "Lukas, let's just do Friday.", "Tue, 10 Nov 2026 08:00:00 -0800", "Dana")
+    owner = fx._mail("t1", 3, fx.OWNER, [fx.LUKAS], [], "Re", "Lukas, let's just do Friday.", "Tue, 10 Nov 2026 08:00:00 -0800", "Dana")
     a = s.handle(mail.thread("zurich-no-zone") + [owner], fx.NOW + timedelta(days=1))
     assert a.kind == "silent" and s.state("t1").status == ThreadStatus.HANDED_BACK.value
+    assert led.for_thread("t1") == []                            # holds go back to the pool
 
 
 def test_loop_guard_is_silent(world):
@@ -109,8 +112,8 @@ def test_plugin_registers_with_a_bare_context(tmp_path, monkeypatch):
 
     ctx = Ctx()
     mod.register(ctx)
-    assert set(ctx.tools) == {"schedule_parse", "schedule_offer", "schedule_check", "schedule_book", "schedule_holds"}
-    assert set(ctx.hooks) == {"pre_tool_call", "post_tool_call", "pre_llm_call"}
+    assert set(ctx.tools) == {"schedule_parse", "schedule_offer", "schedule_check", "schedule_book", "schedule_holds", "schedule_resume"}
+    assert set(ctx.hooks) == {"pre_tool_call", "post_tool_call", "pre_llm_call", "post_approval_response"}
     assert set(ctx.commands) == {"schedule", "holds", "zones"}
     assert "freebusy facts" in ctx.hooks["pre_llm_call"](session_id="s", user_message="x")["context"]
     assert ctx.hooks["pre_tool_call"](tool_name="read_file", args={}) is None

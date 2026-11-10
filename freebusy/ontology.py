@@ -199,6 +199,9 @@ class ThreadState:
     constraints: list[Constraint] = field(default_factory=list)
     history: list[list[str]] = field(default_factory=list)   # [at, status, note]
     updated: str = field(default_factory=now_iso)
+    handled: list[str] = field(default_factory=list)          # message ids already acted on
+    length_min: Optional[int] = None                         # the length on offer, once offered
+    introduced: bool = False                                 # the owner vouched for this thread's sender after the fact
 
     def move(self, status: str, note: str = "") -> None:
         self.status = status
