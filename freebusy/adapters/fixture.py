@@ -99,13 +99,45 @@ def busy_blocks() -> dict[str, list[Slot]]:
     return {WORK: work, PERSONAL: personal, FAMILY: family}
 
 
+# Location and conferencing fields of some fixture events, keyed by (calendar, start). Titles do not exist here either.
+def event_fields() -> dict[tuple[str, str], dict]:
+    return {
+        (WORK, _slot(0, 9, 0, 9, 45).start): {"conference": "https://zoom.us/j/000"},          # Monday team call, every week
+        (WORK, _slot(7, 9, 0, 9, 45).start): {"conference": "https://zoom.us/j/000"},
+        (WORK, _slot(3, 9, 0, 10, 0).start): {"location": "Harbor Bio, 2100 Powell St, Emeryville"},   # Thu Nov 12, in person
+        (WORK, _slot(9, 11, 0, 12, 0).start): {"location": "UCSF Mission Bay, 1825 4th St, San Francisco"},  # Wed Nov 18
+        (PERSONAL, _slot(2, 15, 0, 16, 30).start): {"location": "Online"},                       # Wed Nov 11, virtual
+    }
+
+
+# A simple distance table from Dana's base address, in minutes each way. No maps service.
+TRAVEL_MINUTES = {"Harbor Bio, 2100 Powell St, Emeryville": 40, "UCSF Mission Bay, 1825 4th St, San Francisco": 20}
+
+
 class FixtureCalendar:
     def __init__(self):
         self.write_calendar = WORK
         self.read_calendars = [PERSONAL, FAMILY]
         self._busy = busy_blocks()
+        self._fields = event_fields()
         self.events: list[dict] = []
         self._n = 0
+
+    def places(self, calendar: str, start: datetime, end: datetime, base: str, default_min: int = 30) -> list:
+        """Read only location and conferencing, locally, and return derived facts (in person + minutes, or virtual)."""
+        from ..travel import derive
+        out = []
+        for b in self.free_busy(calendar, start, end):
+            f = self._fields.get((calendar, b.start))
+            if f:
+                fact = derive(b, f.get("location"), f.get("conference"), base, TRAVEL_MINUTES, default_min)
+                if fact:
+                    out.append(fact)
+        return out
+
+    def join_link(self, event_id: str) -> Optional[str]:
+        """The conferencing link of an event the plugin created (fixture: a made-up link)."""
+        return next((e.get("conference") for e in self.events if e["id"] == event_id), None)
 
     def free_busy(self, calendar: str, start: datetime, end: datetime) -> list[Slot]:
         win = Slot(start.isoformat(), end.isoformat())
@@ -114,13 +146,14 @@ class FixtureCalendar:
         return [b for b in blocks if b.overlaps(win)]
 
     def create_event(self, calendar: str, slot: Slot, title: str, attendees: list[str],
-                     description: str = "", tentative: bool = False) -> str:
+                     description: str = "", tentative: bool = False, reminders: Optional[list[dict]] = None) -> str:
         if calendar != self.write_calendar:
             raise WrongCalendar(f"writes go to {self.write_calendar} only")
         self._n += 1
         eid = f"evt-{self._n}"
         self.events.append({"id": eid, "calendar": calendar, "start": slot.start, "end": slot.end, "title": title,
-                            "attendees": list(attendees), "tentative": tentative})
+                            "attendees": list(attendees), "tentative": tentative, "reminders": list(reminders or []),
+                            "conference": f"https://meet.example.com/{eid}"})
         return eid
 
     def delete_event(self, calendar: str, event_id: str) -> None:

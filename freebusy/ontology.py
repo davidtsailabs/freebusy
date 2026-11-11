@@ -195,6 +195,7 @@ class OwnerProfile:
     hold_expiry_hours: int = 48
     max_offer_rounds: int = 2
     base_address: str = ""          # where the owner starts from, for travel buffers; never sent anywhere
+    default_travel_min: int = 30    # travel each way to an in-person event with no entry in a distance table
     reminders: "Reminders" = field(default_factory=lambda: Reminders())
 
     def group_for(self, person: Optional[Person]) -> Group:

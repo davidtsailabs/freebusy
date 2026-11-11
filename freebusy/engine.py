@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-from .adapters.base import CalendarAdapter, MailAdapter, all_busy
+from .adapters.base import CalendarAdapter, MailAdapter, all_busy, all_places
 from .holds import HoldLedger
 from .offer import build_offer, check_proposed, still_free
 from .ontology import (TIER_NAMES, Authority, AuthorityTier, Intent, InviteOwner, OwnerProfile, Person, Slot, ThreadState,
@@ -20,6 +20,7 @@ from .ontology import (TIER_NAMES, Authority, AuthorityTier, Intent, InviteOwner
 from .parse import (Email, SchedulingRequest, agent_on_recipients, loop_guard, owner_about_booking, owner_at_agent,
                     owner_says_stop, parse_email, parse_instruction, strip_quotes)
 from .policy import Gate
+from .travel import travel_blocks
 from .render import OwnerNote, Reply, Row, note_subject, render_html, render_owner_note, render_text
 from .zones import format_day, format_slot_for, label_for, zone_line
 
@@ -91,6 +92,16 @@ class Scheduler:
 
     def busy(self, now: datetime, days: int = 21) -> list[Slot]:
         return all_busy(self.cal, now - timedelta(days=1), now + timedelta(days=days))
+
+    def busy_for(self, group, now: datetime, days: int = 21) -> list[Slot]:
+        """Busy time for building offers: free/busy, plus travel there and back around in-person events when the
+        group opted in. Only derived facts are used (in person + minutes, or virtual); nothing else is read."""
+        busy = self.busy(now, days)
+        if not getattr(group, "travel_buffers", False):
+            return busy
+        facts = all_places(self.cal, now - timedelta(days=1), now + timedelta(days=days), self.profile.base_address,
+                           self.profile.default_travel_min)
+        return sorted(busy + travel_blocks(facts), key=lambda s: s.start)
 
     # -- the one entry point ---------------------------------------------------
     def handle(self, thread: list[Email], now: datetime) -> Action:
@@ -314,7 +325,7 @@ class Scheduler:
     def _offer(self, req: SchedulingRequest, person: Person, st: ThreadState, thread: list[Email], now: datetime,
                to: Optional[list[str]] = None, greet: str = "", intro: bool = False) -> Action:
         group = self.profile.group_for(person)
-        busy = self.busy(now)
+        busy = self.busy_for(group, now)
         facts = self.gate.facts(req.thread_id)
         extra = ""
         their_time: Optional[Slot] = None

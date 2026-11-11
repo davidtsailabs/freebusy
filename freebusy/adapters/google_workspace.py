@@ -45,6 +45,26 @@ def reduce_to_busy(events: list[dict[str, Any]]) -> list[Slot]:
     return sorted(out, key=lambda s: s.start)
 
 
+def reduce_to_places(events: list[dict[str, Any]], base: str, default_min: int = 30,
+                     table: Optional[dict[str, int]] = None) -> list:
+    """For travel buffers only: keep start, end, location and the conferencing link, derive a fact, drop the rest.
+
+    Titles, attendees and descriptions are never read here. The location text stays in this function;
+    what leaves is "in person, N minutes" or "virtual".
+    """
+    from ..travel import derive
+    out = []
+    for ev in events:
+        busy = reduce_to_busy([ev])         # the same start/end rule as free/busy; free events do not count
+        if not busy:
+            continue
+        entry = ((ev.get("conferenceData") or {}).get("entryPoints") or [{}])[0]
+        fact = derive(busy[0], ev.get("location"), ev.get("hangoutLink") or entry.get("uri"), base, table, default_min)
+        if fact:
+            out.append(fact)
+    return out
+
+
 class GoogleWorkspaceAdapter:
     def __init__(self, write_calendar: str, read_calendars: list[str],
                  dispatch: Optional[Callable[[str, dict], str]] = None):
@@ -64,13 +84,23 @@ class GoogleWorkspaceAdapter:
         import json
         return reduce_to_busy(json.loads(raw) if isinstance(raw, str) else raw)
 
+    def places(self, calendar: str, start: datetime, end: datetime, base: str, default_min: int = 30) -> list:
+        cmd = self._command("calendar", "events", "--calendar", calendar, "--from", start.isoformat(),
+                            "--to", end.isoformat(), "--fields", "start,end,location,hangoutLink,conferenceData,transparency", "--json")
+        if self._dispatch is None:
+            raise NotImplementedError(f"would dispatch through the tool pipeline: {cmd}")
+        raw = self._dispatch("terminal", {"command": cmd})
+        import json
+        return reduce_to_places(json.loads(raw) if isinstance(raw, str) else raw, base, default_min)
+
     def create_event(self, calendar: str, slot: Slot, title: str, attendees: list[str],
-                     description: str = "", tentative: bool = False) -> str:
+                     description: str = "", tentative: bool = False, reminders: Optional[list[dict]] = None) -> str:
         if calendar != self.write_calendar:
             raise WrongCalendar(f"writes go to {self.write_calendar} only")
         guest_flags = [flag for a in attendees for flag in ("--attendee", a)]
+        reminder_flags = [flag for r in (reminders or []) for flag in ("--reminder", f"{r['method']}:{r['minutes']}")]
         cmd = self._command("calendar", "create", "--calendar", calendar, "--start", slot.start, "--end", slot.end,
-                            "--title", title, *guest_flags)
+                            "--title", title, *guest_flags, *reminder_flags, "--conference")
         raise NotImplementedError(f"would dispatch through the tool pipeline: {cmd}")
 
     def delete_event(self, calendar: str, event_id: str) -> None:
