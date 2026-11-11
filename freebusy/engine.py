@@ -17,8 +17,8 @@ from .holds import HoldLedger
 from .offer import build_offer, check_proposed, still_free
 from .ontology import (Authority, AuthorityTier, Intent, InviteOwner, OwnerProfile, Person, Slot, ThreadState, ThreadStatus,
                        now_iso)
-from .parse import (Email, SchedulingRequest, agent_on_recipients, loop_guard, owner_at_agent, owner_says_stop, parse_email,
-                    parse_instruction, strip_quotes)
+from .parse import (Email, SchedulingRequest, agent_on_recipients, loop_guard, owner_about_booking, owner_at_agent,
+                    owner_says_stop, parse_email, parse_instruction, strip_quotes)
 from .policy import Gate
 from .render import OwnerNote, Reply, Row, note_subject, render_html, render_owner_note, render_text
 from .zones import format_day, format_slot_for, label_for, zone_line
@@ -110,8 +110,9 @@ class Scheduler:
 
     # -- the owner's word --------------------------------------------------------
     def _owner_message(self, req: SchedulingRequest, latest: Email, thread: list[Email], now: datetime) -> Action:
-        """The owner wrote in the thread. Rule: "cc always means take it" (David, 2026-11-10).
+        """The owner wrote in the thread. Two rules, both David's of 2026-11-10.
 
+        "cc always means take it":
         - An instruction on a waiting thread (the owner's own text begins with approve / yes /
           go ahead / offer N / decline, with the agent on the recipients or @agent) resumes it.
         - "@agent stop" or "agent, stop" in the owner's own text hands the thread back.
@@ -119,11 +120,17 @@ class Scheduler:
           takes the thread and acts in this same run. If the latest message from someone else is
           a scheduling request it is handled now, as introduced; if there is no request yet, the
           agent offers held slots to the other participants with the zone ask.
-        - The owner writes without the agent on the recipients: the thread is handed back, and
-          the agent stays silent until the owner cc's it again or writes @agent.
 
-        Kept in one function on purpose: what the owner's word means mid-thread is still open
-        and may change this rule.
+        "The owner's word pauses it only when it is about the time or the booking":
+        - The owner writes without the agent on the recipients, and their own words are about the
+          time or the booking (a time, a day, a length, "move", "cancel", "not that day",
+          "I'll handle it"): the agent pauses. Holds are released and it stays silent until the
+          owner cc's it again or writes @agent.
+        - The owner writes without the agent and the message is only social ("thanks",
+          "looking forward"): nothing changes. The agent keeps the thread and its holds.
+
+        Only the owner's own text counts; quoted text is stripped first. Kept in one function on
+        purpose, so what the owner's word means mid-thread can be changed in one place.
         """
         st = self.state(req.thread_id)
         own = strip_quotes(latest.body)
@@ -133,9 +140,15 @@ class Scheduler:
         if owner_says_stop(own):
             return self._hand_back(req, "the owner wrote @agent stop")
         if not addressed:
-            if self.ledger.for_thread(req.thread_id) or st.history:
-                return self._hand_back(req, "the owner wrote without the agent on the thread")
-            return Action("silent", req.thread_id, "the owner wrote without the agent; nothing to take", request=req)
+            if not (self.ledger.for_thread(req.thread_id) or st.history):
+                return Action("silent", req.thread_id, "the owner wrote without the agent; nothing to take", request=req)
+            if st.status == ThreadStatus.HANDED_BACK.value:
+                return Action("silent", req.thread_id, "already handed back to the owner", request=req)
+            about = owner_about_booking(own)
+            if about:
+                return self._hand_back(req, f"paused: the owner wrote about the time or the booking (\"{about}\")")
+            self.gate.audit({"thread": req.thread_id, "owner_word": "social", "kept": True})
+            return Action("silent", req.thread_id, "the owner's message is only social; the agent keeps the thread", request=req)
 
         # The agent takes the thread.
         if st.status == ThreadStatus.HANDED_BACK.value or not st.history:

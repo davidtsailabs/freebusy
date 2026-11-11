@@ -157,6 +157,36 @@ def owner_says_stop(own_text: str) -> bool:
     return bool(_STOP_RE.search(own_text or ""))
 
 
+_ABOUT_BOOKING = [
+    r"\b\d{1,2}(:\d{2})?\s*(am|pm|a\.m\.|p\.m\.)", r"\b\d{1,2}:\d{2}\b",                      # a time
+    r"\b(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(day|nesday|rsday|urday|sday)?\b",        # a day
+    r"\b(today|tonight|tomorrow|next week|this week|weekend|this (morning|afternoon|evening))\b",
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", r"\b\d{1,2}/\d{1,2}\b",
+    r"\b\d{1,3}\s*(min|mins|minutes?)\b|\b(an|one|half an|two)\s+hours?\b",                    # a length
+    r"\b(move|moving|moved|resched\w*|postpone\w*|push (it|this|that)|cancel\w*|call it off|instead)\b",
+    r"\bnot (that|this) (day|time|week)\b", r"\b(doesn'?t|does not|won'?t|will not) work\b", r"\bcan'?t make\b",
+    r"\bi('| wi)ll (handle|take|sort|set|book|schedule|send)\b", r"\bi('ve| have) got (it|this)\b",
+    r"\bleave (it|this) (to|with) me\b",
+    r"\b(book|booked|booking|invite|slot|slots|availability)\b",
+    r"\b(earlier|later|shorter|longer) (time|slot|day|in the day|that day|one)\b",
+]
+
+
+def owner_about_booking(own_text: str) -> Optional[str]:
+    """The words in the owner's own text that are about the time or the booking; None when it is only social.
+
+    About the booking: a time, a day or a date, a length, "move", "cancel", "not that day",
+    "I'll handle it", "book", "invite". Only social: "thanks", "looking forward", "great to meet".
+    Pass text with quotes already stripped; the signature block is ignored.
+    """
+    body, _ = split_signature(own_text or "")
+    for p in _ABOUT_BOOKING:
+        m = re.search(p, body, re.IGNORECASE)
+        if m:
+            return m.group(0)
+    return None
+
+
 _INSTRUCTIONS = (("approve", re.compile(r"^(?:approved?|yes|go ahead)\b", re.IGNORECASE)),
                  ("offer", re.compile(r"^offer\s+(\d{1,3})\b", re.IGNORECASE)),
                  ("decline", re.compile(r"^decline\b", re.IGNORECASE)))
