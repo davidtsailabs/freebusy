@@ -22,6 +22,7 @@ from .ontology import TIER_NAMES, AuthorityTier, OwnerProfile, Slot
 from .zones import ABBREVIATIONS
 
 SEND_TOOLS = {"schedule_send", "send_email", "email_send", "gmail_send", "mail_send", "reply_email"}
+REMIND_TOOLS = {"schedule_remind"}
 WRITE_TOOLS = {"schedule_book", "calendar_create_event", "create_event", "calendar_write", "book_event"}
 
 _ZONE_WORDS = re.compile(r"(?<![A-Za-z])(" + "|".join(k for k in ABBREVIATIONS if len(k) <= 4) + r")(?![A-Za-z])", re.IGNORECASE)
@@ -80,6 +81,8 @@ class Gate:
                 verdict = self._check_send(args)
             elif tool_name in WRITE_TOOLS:
                 verdict = self._check_write(args)
+            elif tool_name in REMIND_TOOLS:
+                verdict = self._check_remind(args)
             else:
                 return None
         except Exception as exc:  # a gate that cannot decide blocks
@@ -137,6 +140,20 @@ class Gate:
                          code="approve_first")
         if needs_owner and not t.owner_approved:
             return block(f"a {int(length)}-minute meeting needs the owner's approval before booking", code="long_meeting")
+        return None
+
+    def _check_remind(self, a: dict) -> Optional[dict]:
+        """Reminders and briefings go to the owner alone, never to the other person."""
+        if a.get("to") or a.get("cc"):
+            return block("a reminder has no recipients of its own; it goes to the owner's channel only")
+        target = str(a.get("deliver", "")).split(":", 1)
+        platform, dest = target[0], (target[1].lower() if len(target) > 1 else "")
+        t = self.facts(str(a.get("thread_id", "")))
+        owners = {x.lower() for x in self.profile.owner_addresses}
+        if dest and dest in t.participants - owners:
+            return block("a reminder may not go to the other person; reminders are the owner's alone")
+        if platform == "email" and dest and dest not in owners:
+            return block(f"reminder email to {dest}, which is not one of the owner's addresses")
         return None
 
     # -- audit ----------------------------------------------------------------

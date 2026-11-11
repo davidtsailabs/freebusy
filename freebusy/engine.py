@@ -18,8 +18,9 @@ from .offer import build_offer, check_proposed, still_free
 from .ontology import (TIER_NAMES, Authority, AuthorityTier, Intent, InviteOwner, OwnerProfile, Person, Slot, ThreadState,
                        ThreadStatus, now_iso)
 from .parse import (Email, SchedulingRequest, agent_on_recipients, loop_guard, owner_about_booking, owner_at_agent,
-                    owner_says_stop, parse_email, parse_instruction, strip_quotes)
+                    owner_says_stop, parse_email, parse_instruction, split_signature, strip_quotes)
 from .policy import Gate
+from .reminders import Job, Outbox, briefing_text, briefing_time, deliver_target, event_reminders, first_ask, open_questions, reminder_text
 from .travel import travel_blocks
 from .render import OwnerNote, Reply, Row, note_subject, render_html, render_owner_note, render_text
 from .zones import format_day, format_slot_for, label_for, zone_line
@@ -37,6 +38,7 @@ class Action:
     slots: list[Slot] = field(default_factory=list)
     booked: Optional[Slot] = None
     request: Optional[SchedulingRequest] = None
+    reminders: list = field(default_factory=list)   # reminder Jobs scheduled for the owner
 
 
 # Why a request waits for the owner, and what "approve" does for each.
@@ -71,12 +73,13 @@ def accepted_instructions(thread_id: str, p: Optional[Pending] = None) -> str:
 
 class Scheduler:
     def __init__(self, profile: OwnerProfile, calendar: CalendarAdapter, mail: MailAdapter, ledger: HoldLedger,
-                 gate: Optional[Gate] = None, people: Optional[dict[str, Person]] = None):
+                 gate: Optional[Gate] = None, people: Optional[dict[str, Person]] = None, outbox=None):
         self.profile, self.cal, self.mail, self.ledger = profile, calendar, mail, ledger
         self.gate = gate or Gate(profile, ledger)
         self.people = people or {}
         self.threads: dict[str, ThreadState] = {}
         self.pending: dict[str, Pending] = {}
+        self.outbox = outbox if outbox is not None else Outbox()     # fixture: recorded; live: Hermes scheduled jobs
 
     # -- lookups -------------------------------------------------------------
     def state(self, thread_id: str) -> ThreadState:
@@ -391,6 +394,7 @@ class Scheduler:
         """Their proposed time fits: hold it, then book under the same gate as a pick."""
         self.ledger.hold_offer([slot], req.thread_id, person.id, now)
         req.pick = "A"
+        st.history.append([now_iso(), st.status, f"their proposed time fit: {req.proposed[0].text if req.proposed else slot.start}"])
         return self._book(req, person, st, thread, now)
 
     # -- book ------------------------------------------------------------------
@@ -431,7 +435,10 @@ class Scheduler:
             reply = Reply(name=person.name.split()[0], lead=f"{format_day(booked.start_dt(), self.profile.home_zone)}, "
                           f"{format_slot_for(booked.start_dt(), booked.end_dt(), self.profile.home_zone, person.zone)} works. "
                           f"Send the invite to {self.profile.owner_addresses[0]} and I will accept it.", owner_name=self.profile.name)
-            return self._send(req, reply, [])
+            act = self._send(req, reply, [])
+            if act.kind == "reply":
+                act.reminders = self._remind(req, person, st, booked, "", thread, now, ours=False)
+            return act
         self.ledger.add(booked, req.thread_id, person.id, now) if not self.ledger.find(req.thread_id, booked) else None
         verdict = self.gate.pre_tool_call("schedule_book", {"thread_id": req.thread_id, "calendar": self.profile.write_calendar,
                                                             "slot": {"start": booked.start, "end": booked.end}, "attendees": [req.sender]})
@@ -444,18 +451,82 @@ class Scheduler:
                 act.reason = verdict["message"]
                 return act
             return Action("blocked", req.thread_id, verdict["message"], request=req)
-        event_id = self.cal.create_event(self.profile.write_calendar, booked, f"{self.profile.name.split()[0]} and {person.name}", [req.sender])
+        event_id = self.cal.create_event(self.profile.write_calendar, booked, f"{self.profile.name.split()[0]} and {person.name}", [req.sender],
+                                         reminders=event_reminders(self.profile.reminders))
+        agreed = self._agreed(req, st, person)
         self.ledger.book(req.thread_id, booked)
         self.pending.pop(req.thread_id, None)
         st.move(ThreadStatus.DONE.value, f"booked {booked.start} as {event_id}")
         when = f"{format_day(booked.start_dt(), self.profile.home_zone)} · {format_slot_for(booked.start_dt(), booked.end_dt(), self.profile.home_zone, person.zone)}"
         reply = Reply(name=person.name.split()[0], lead=f"Booked: {when}. The invite is on its way.", owner_name=self.profile.name)
         act = self._send(req, reply, [])
+        act.reminders = self._remind(req, person, st, booked, event_id, thread, now, ours=True, agreed=agreed)
         note = OwnerNote(state="Booked", headline=f"{person.name}, {when}", who=person.name, when=when, ask="Nothing",
-                         stops=[s[2] for s in st.history[-4:]], thread_ref=req.thread_id, block_elsewhere=True)
+                         stops=[s[2] for s in st.history[-4:]], thread_ref=req.thread_id, block_elsewhere=True,
+                         reminders=self._reminder_line(act.reminders))
         act.owner_note, act.owner_subject, act.booked = render_owner_note(note), note_subject(note), booked
         act.kind = "reply+notify"
         return act
+
+    # -- reminders: the owner's alone ------------------------------------------------
+    def _agreed(self, req: SchedulingRequest, st: ThreadState, person: Person) -> str:
+        first = person.name.split()[0]
+        fit = next((h[2] for h in reversed(st.history) if h[2].startswith("their proposed time fit")), None)
+        if fit:
+            how = f"{first} proposed \"{fit.split(': ', 1)[-1]}\" and it fit your rules"
+        elif req.pick:
+            rounds = max(st.offer_rounds, 1)
+            z = f" with {req.zone.label}" if req.zone and req.zone.source == "stated" else ""
+            how = f"{first} picked {req.pick}{z} from {rounds} round{'s' if rounds > 1 else ''} of held times"
+        else:
+            how = f"{first} confirmed by email"
+        if self.gate.facts(req.thread_id).owner_approved:
+            how += "; you approved it"
+        return how
+
+    def _reminder_line(self, jobs: list) -> str:
+        r = self.profile.reminders
+        if not r.on:
+            return "Reminders: off"
+        parts = [f"pop-up {r.popup_min} min" if r.popup_min else "", f"email {r.email_min // 60 // 24} day" if r.email_min else ""]
+        parts += [f"{j.kind} {'by ' + r.channel if j.kind == 'text' else 'the evening before'}" for j in jobs]
+        return "Reminders: " + ", ".join(p for p in parts if p)
+
+    def _remind(self, req: SchedulingRequest, person: Person, st: ThreadState, booked: Slot, event_id: str, thread: list[Email],
+                now: datetime, ours: bool, agreed: str = "") -> list:
+        """Schedule the text and the day-before briefing for the owner. Each passes the gate, which refuses any target
+        that is not the owner's own."""
+        r = self.profile.reminders
+        if not r.on:
+            return []
+        zone = self.profile.home_zone
+        link = getattr(self.cal, "join_link", lambda _e: None)(event_id) if event_id else None
+        where = f"Join: {link}" if link else ("Join: the link is in their invite" if not ours else "Join: no link on the event")
+        deliver = deliver_target(r)
+        owners = {a.lower() for a in self.profile.owner_addresses}
+        agent = self.profile.agent_address.lower()
+        theirs = [split_signature(strip_quotes(m.body))[0] for m in thread if m.sender.lower() not in owners | {agent}]
+        jobs: list[Job] = []
+        if r.text_before_min:
+            at = booked.start_dt() - timedelta(minutes=r.text_before_min)
+            if at > now:
+                jobs.append(Job("text", at.isoformat(), deliver, reminder_text(person, booked, zone, r.text_before_min, where),
+                                req.thread_id, event_id, name=f"freebusy reminder {req.thread_id}"))
+        if r.briefing:
+            invite = (f"sent by the assistant from {self.profile.write_calendar}" if ours else f"{person.name.split()[0]}'s side sends it")
+            text = briefing_text(person, person.org or "", booked, zone, thread[0].subject if thread else "", "",
+                                 first_ask(theirs), agreed or self._agreed(req, st, person), invite, where,
+                                 open_questions(theirs), req.thread_id)
+            at = briefing_time(booked, zone, r.briefing_at, now)
+            jobs.append(Job("briefing", at.isoformat(), deliver, text, req.thread_id, event_id, name=f"freebusy briefing {req.thread_id}"))
+        done = []
+        for j in jobs:
+            verdict = self.gate.pre_tool_call("schedule_remind", {"thread_id": j.thread_id, "deliver": j.deliver, "kind": j.kind})
+            if verdict:
+                continue
+            j.job_id = self.outbox.schedule(j)
+            done.append(j)
+        return done
 
     # -- send and notify -------------------------------------------------------
     def _send(self, req: SchedulingRequest, reply: Reply, slots: list[Slot], to: Optional[list[str]] = None) -> Action:

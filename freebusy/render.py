@@ -107,6 +107,7 @@ class OwnerNote:
     stops: list[str] = field(default_factory=list)    # 3 to 5 short lines, newest last
     thread_ref: str = ""
     block_elsewhere: bool = False   # add the line to block it on calendars the agent cannot write to
+    reminders: str = ""             # "Reminders: pop-up 10 min, email 1 day, text by telegram, briefing the evening before"
 
 
 def note_subject(n: OwnerNote) -> str:
@@ -130,6 +131,8 @@ def render_owner_note(n: OwnerNote) -> str:
         t += ["", "What happened:"] + [f"- {s}" for s in n.stops[-5:]]
     if n.block_elsewhere and n.state == "Booked":
         t += ["", "Block this time on any calendar the assistant cannot write to."]
+    if n.reminders:
+        t += [n.reminders]
     if n.thread_ref:
         t += ["", f"Thread: {n.thread_ref}"]
     return "\n".join(t)

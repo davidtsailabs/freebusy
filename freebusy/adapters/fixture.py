@@ -39,6 +39,8 @@ PEOPLE = {
 }
 ORGS = {"alpineventures.example": "Alpine Ventures", "harborbio.example": "Harbor Bio", "cascadehealth.example": "Cascade Health",
         "brightpathcro.example": "Brightpath CRO", "fjordtx.example": "Fjord Therapeutics"}
+for _p in PEOPLE.values():
+    _p.org = ORGS.get(_p.emails[0].split("@")[1])
 FAMILY_DOMAIN = "whitfield.example"
 AMARA = "amara@whitfield.example"
 BASE = "Dana's office, 500 Howard St, San Francisco"

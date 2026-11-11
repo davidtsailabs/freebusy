@@ -92,6 +92,7 @@ class Person:
     stated_at: str = field(default_factory=now_iso)
     group_id: Optional[str] = None
     tier: int = AuthorityTier.TRIAL
+    org: Optional[str] = None             # their organization, when known; used in the owner's briefing only
 
 
 @dataclass
