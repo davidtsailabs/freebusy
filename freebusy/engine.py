@@ -480,8 +480,11 @@ class Scheduler:
             how = f"{first} picked {req.pick}{z} from {rounds} round{'s' if rounds > 1 else ''} of held times"
         else:
             how = f"{first} confirmed by email"
-        if self.gate.facts(req.thread_id).owner_approved:
+        facts = self.gate.facts(req.thread_id)
+        if facts.owner_approved:
             how += "; you approved it"
+        elif facts.approved_len_min > self.profile.max_len_without_owner_min:
+            how += f"; you approved {facts.approved_len_min} minutes"
         return how
 
     def _reminder_line(self, jobs: list) -> str:
