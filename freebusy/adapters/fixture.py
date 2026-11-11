@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from ..ontology import AuthorityTier, Group, OwnerProfile, Person, Slot, Window, default_groups
+from ..ontology import AuthorityTier, Group, OwnerProfile, Person, Reminders, Slot, Window, default_groups
 from ..parse import AGENT_HEADER, Email
 from .base import WrongCalendar
 
@@ -61,7 +61,7 @@ def profile() -> OwnerProfile:
     return OwnerProfile(name="Dana Whitfield", home_zone="America/Los_Angeles", agent_address=AGENT,
                         owner_addresses=[OWNER], write_calendar=WORK, read_calendars=[PERSONAL, FAMILY],
                         groups={"default": g, "family": fam}, allowlist={"marisol@cascadehealth.example": AuthorityTier.BOOK},
-                        auto_book=True, base_address=BASE)
+                        auto_book=True, base_address=BASE, reminders=Reminders(channel="telegram"))
 
 
 def new_user_profile() -> OwnerProfile:
