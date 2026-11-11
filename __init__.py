@@ -25,7 +25,7 @@ from freebusy.engine import Scheduler  # noqa: E402
 from freebusy.holds import HoldLedger  # noqa: E402
 from freebusy.offer import build_offer, check_proposed  # noqa: E402
 from freebusy.groups import describe, groups_from_config, groups_to_config, set_setting  # noqa: E402
-from freebusy.ontology import OwnerProfile, Reminders, Slot, from_dict, to_dict  # noqa: E402
+from freebusy.ontology import TIER_NAMES, OwnerProfile, Reminders, Slot, from_dict, to_dict  # noqa: E402
 from freebusy.reminders import HermesCron, Outbox  # noqa: E402
 from freebusy.setup import SetupFlow  # noqa: E402
 from freebusy.parse import Email, parse_email, parse_instruction  # noqa: E402
@@ -174,7 +174,7 @@ def schedule_offer(args: dict, **kwargs) -> str:
         if args.get("person_zone"):
             return json.dumps({"error": "a zone is set from the person's own words through schedule_parse, not passed in"})
         group = rt["profile"].group_for(person)
-        result = build_offer(rt["profile"], group, sched.busy(_now()), rt["ledger"], args.get("thread_id", ""), _now(),
+        result = build_offer(rt["profile"], group, sched.busy_for(group, _now()), rt["ledger"], args.get("thread_id", ""), _now(),
                              length_min=args.get("length_min"), person_zone=person.zone)
         return json.dumps({"slots": to_dict(result.slots), "needs_owner": result.needs_owner, "length_min": result.length_min,
                            "note": "slots are not held until schedule_holds hold is called"})
@@ -189,7 +189,7 @@ def schedule_check(args: dict, **kwargs) -> str:
         person = sched.person_for(args.get("sender", ""))
         group = rt["profile"].group_for(person)
         proposed = [Slot(s["start"], s["end"]) for s in args.get("slots", [])]
-        checks = check_proposed(rt["profile"], group, sched.busy(_now()), rt["ledger"], args.get("thread_id", ""), proposed, _now())
+        checks = check_proposed(rt["profile"], group, sched.busy_for(group, _now()), rt["ledger"], args.get("thread_id", ""), proposed, _now())
         return json.dumps([{"slot": to_dict(c.slot), "ok": c.ok, "reason": c.reason} for c in checks])
     except Exception as exc:
         return json.dumps({"error": str(exc)})
@@ -318,7 +318,9 @@ def _pre_llm_call(session_id: str = "", user_message: str = "", **kwargs):
         holds = led.open()
         lines = ["freebusy facts for this turn:",
                  f"- owner zone {label_for(rt['profile'].home_zone)}; never show a time in a zone the person did not state",
-                 f"- open holds: {len(holds)} (a held slot is never offered to another thread)"]
+                 f"- open holds: {len(holds)} (a held slot is never offered to another thread)",
+                 "- groups: " + "; ".join(f"{g.name} tier {int(g.tier)} {TIER_NAMES[int(g.tier)]}" for g in rt["profile"].groups.values()),
+                 "- unknown senders never get a reply without the owner; reminders go to the owner only"]
         for h in holds[:12]:
             lines.append(f"  - {h.thread_id}: {h.slot.start} to {h.slot.end}, expires {h.expires}")
         zones = [(p.name, label_for(p.zone)) for p in rt["scheduler"].people.values() if p.zone and p.zone_source == "stated"]
