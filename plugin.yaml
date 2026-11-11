@@ -1,5 +1,5 @@
 name: freebusy
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: "Email meeting scheduling that never reveals a calendar and never invents a time zone. Offers come from free/busy only, every slot is held before it is offered, and a time is never shown in a zone the other person did not give. Fixture mode needs no accounts."
@@ -45,6 +45,12 @@ config_schema:
     type: list
     default: []
     description: "The owner's own addresses. Only mail from these carries authority."
+  identity_mode:
+    type: str
+    choices: [plus, same, alias]
+    default: plus
+    label: How the assistant sends mail
+    description: "plus: you+agent@yourdomain. same: your own address, every message marked as the assistant's. alias: its own address."
   agent_address:
     type: str
     default: ""
@@ -59,17 +65,45 @@ config_schema:
     description: "Calendars read as free or busy only."
   groups:
     type: dict
-    default: {}
-    description: "Per-group windows by weekday, buffer, default length, earliest day out, horizon, tier."
+    label: Groups
+    description: "Each group has its own windows by weekday (in your zone), buffer, default length, earliest day out, horizon, tier (0 Trial, 1 Offer, 2 Book, 3 Manage), visibility (busy_only or full), travel buffers (off by default) and its members by address or domain. Senders who match no group get the default group. Edit here, or with /schedule group <name> <setting> <value>."
+    default:
+      Work:
+        windows: {mon: ["09:00-17:00"], tue: ["09:00-17:00"], wed: ["09:00-17:00"], thu: ["09:00-17:00"], fri: ["09:00-17:00"]}
+        buffer_min: 15
+        default_len_min: 30
+        earliest_days_out: 1
+        horizon_days: 14
+        tier: 0
+        visibility: busy_only
+        members: []
+        domains: []
+        travel_buffers: false
+      Family:
+        windows: {mon: ["07:00-21:00"], tue: ["07:00-21:00"], wed: ["07:00-21:00"], thu: ["07:00-21:00"], fri: ["07:00-21:00"], sat: ["07:00-21:00"], sun: ["07:00-21:00"]}
+        buffer_min: 0
+        default_len_min: 30
+        earliest_days_out: 0
+        horizon_days: 14
+        tier: 0
+        visibility: full
+        members: []
+        domains: []
+        travel_buffers: false
+  default_group:
+    type: str
+    default: Work
+    label: Default group
+    description: "The group for senders who match no group's members or domains."
   allowlist:
     type: dict
     default: {}
-    description: "Sender address to tier (0 observe, 1 offer, 2 book)."
+    description: "Sender address to tier (0 Trial, 1 Offer, 2 Book). Unknown senders never get a reply without you, whatever the tier."
   auto_book:
     type: bool
     default: true
     label: Book on a fitting stated time
-    description: "On: an introduced sender's fitting pick is booked at once and the owner is told. Off: the owner approves first (/schedule approve, an email reply, or a Hermes approval), and the booking then goes ahead in the same run."
+    description: "On: an introduced sender's fitting pick is booked at once and the owner is told (in groups at tier 2 Book). Off: the owner approves first (/schedule approve, an email reply, or a Hermes approval), and the booking then goes ahead in the same run. Groups in Trial always wait for the owner; finishing /schedule setup moves them to Book (on) or Offer (off)."
   max_len_without_owner_min:
     type: int
     default: 59
@@ -83,3 +117,49 @@ config_schema:
   max_open_holds:
     type: int
     default: 12
+  reminders_on:
+    type: bool
+    default: true
+    label: Reminders
+    description: "For every event the assistant books: reminders on the event, a text to you before it, and a day-before briefing. Never sent to the other person."
+  reminder_popup_min:
+    type: int
+    default: 10
+    label: Pop-up before (minutes)
+  reminder_email_min:
+    type: int
+    default: 1440
+    label: Calendar email before (minutes)
+  reminder_text_before_min:
+    type: int
+    default: 60
+    label: Text to you before (minutes)
+  reminder_channel:
+    type: str
+    choices: [telegram, sms, imessage, email]
+    default: email
+    label: Where texts go
+    description: "Sent through Hermes' own messaging (iMessage through BlueBubbles). The channel's sign-in is set in Hermes, never here."
+  reminder_target:
+    type: str
+    default: ""
+    label: Your chat, number or address
+    description: "Your own. Blank uses the channel's home. Email reminders go to one of your own addresses only."
+  briefing_on:
+    type: bool
+    default: true
+    label: Day-before briefing
+  briefing_at:
+    type: str
+    default: "17:00"
+    label: Briefing time, the evening before
+  base_address:
+    type: str
+    default: ""
+    label: Base address for travel buffers
+    description: "Where travel time is measured from. Used on this machine only, never sent."
+  default_travel_min:
+    type: int
+    default: 30
+    label: Travel minutes each way
+    description: "For an in-person event when no distance table entry exists. No maps service is called."

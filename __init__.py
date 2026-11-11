@@ -1,6 +1,7 @@
 """freebusy plugin: registration with Hermes.
 
-Wires six tools, four hooks and three slash commands. Every hook accepts
+Wires six tools, four hooks and three slash commands (/schedule with setup, groups,
+group, reminders and the owner's controls; /holds; /zones). Every hook accepts
 **kwargs and never raises. Anything the host context lacks is skipped
 quietly. In fixture mode nothing here reaches a network or a credential.
 """
@@ -23,7 +24,10 @@ from freebusy.adapters import fixture as fx  # noqa: E402
 from freebusy.engine import Scheduler  # noqa: E402
 from freebusy.holds import HoldLedger  # noqa: E402
 from freebusy.offer import build_offer, check_proposed  # noqa: E402
-from freebusy.ontology import OwnerProfile, Slot, from_dict, to_dict  # noqa: E402
+from freebusy.groups import describe, groups_from_config, groups_to_config, set_setting  # noqa: E402
+from freebusy.ontology import OwnerProfile, Reminders, Slot, from_dict, to_dict  # noqa: E402
+from freebusy.reminders import HermesCron, Outbox  # noqa: E402
+from freebusy.setup import SetupFlow  # noqa: E402
 from freebusy.parse import Email, parse_email, parse_instruction  # noqa: E402
 from freebusy.policy import Gate  # noqa: E402
 from freebusy.zones import detect_zone, label_for  # noqa: E402
@@ -52,35 +56,86 @@ def _data_dir(ctx) -> Path:
         return base
 
 
+_OVERLAY: dict = {}   # answers saved this session; persisted to settings.json only when the host has no set_config
+
+
 def _cfg(ctx, key: str, default):
+    if key in _OVERLAY:
+        return _OVERLAY[key]
     try:
         return ctx.get_config(key, default=default)
     except Exception:
         return default
 
 
+def _set_cfg(ctx, key: str, value) -> None:
+    """Save one setting: through Hermes (the same writer as the Desktop settings form) when the host offers it,
+    else to the plugin's own settings.json. Never a secret: config_schema declares none and setup refuses them."""
+    _OVERLAY[key] = value
+    if hasattr(ctx, "set_config"):
+        try:
+            ctx.set_config(key, value)
+            return
+        except Exception as exc:
+            logger.debug("freebusy set_config %s: %s", key, exc)
+    path = _data_dir(ctx) / "settings.json"
+    saved = json.loads(path.read_text()) if path.exists() else {}
+    saved[key] = value
+    path.write_text(json.dumps(saved, indent=1, sort_keys=True))
+
+
+def _load_overlay(ctx) -> None:
+    _OVERLAY.clear()
+    if hasattr(ctx, "set_config"):
+        return
+    path = _data_dir(ctx) / "settings.json"
+    if path.exists():
+        try:
+            _OVERLAY.update(json.loads(path.read_text()))
+        except Exception:
+            pass
+
+
+def _reminders_from_config(ctx) -> Reminders:
+    return Reminders(on=bool(_cfg(ctx, "reminders_on", True)), popup_min=int(_cfg(ctx, "reminder_popup_min", 10)),
+                     email_min=int(_cfg(ctx, "reminder_email_min", 1440)), text_before_min=int(_cfg(ctx, "reminder_text_before_min", 60)),
+                     channel=str(_cfg(ctx, "reminder_channel", "email")), target=str(_cfg(ctx, "reminder_target", "")),
+                     briefing=bool(_cfg(ctx, "briefing_on", True)), briefing_at=str(_cfg(ctx, "briefing_at", "17:00")))
+
+
+def _profile_from_config(ctx) -> OwnerProfile:
+    groups = groups_from_config(_cfg(ctx, "groups", {}))
+    default = str(_cfg(ctx, "default_group", "Work")).strip().lower()
+    return OwnerProfile(name=_cfg(ctx, "owner_name", ""), home_zone=_cfg(ctx, "home_zone", "America/Los_Angeles"),
+                        agent_address=_cfg(ctx, "agent_address", ""), owner_addresses=list(_cfg(ctx, "owner_addresses", [])),
+                        write_calendar=_cfg(ctx, "write_calendar", ""), read_calendars=list(_cfg(ctx, "read_calendars", [])),
+                        groups=groups, default_group=default if default in groups else next(iter(groups)),
+                        allowlist={k.lower(): int(v) for k, v in dict(_cfg(ctx, "allowlist", {})).items()},
+                        auto_book=bool(_cfg(ctx, "auto_book", True)),
+                        max_len_without_owner_min=int(_cfg(ctx, "max_len_without_owner_min", 59)),
+                        notice_hours=int(_cfg(ctx, "notice_hours", 24)), hold_expiry_hours=int(_cfg(ctx, "hold_expiry_hours", 48)),
+                        max_open_holds=int(_cfg(ctx, "max_open_holds", 12)), base_address=str(_cfg(ctx, "base_address", "")),
+                        default_travel_min=int(_cfg(ctx, "default_travel_min", 30)), reminders=_reminders_from_config(ctx))
+
+
 def _build_runtime(ctx) -> dict:
     data = _data_dir(ctx)
     mode = _cfg(ctx, "mode", "fixture")
+    dispatch = getattr(ctx, "dispatch_tool", None)
     if mode == "fixture" or not _cfg(ctx, "owner_name", ""):
         profile, cal, mail, people = fx.profile(), fx.FixtureCalendar(), fx.FixtureMail(), fx.people()
+        outbox = Outbox(data / "outbox.jsonl")             # fixture: reminders are recorded, never sent
     else:
-        profile = OwnerProfile(name=_cfg(ctx, "owner_name", ""), home_zone=_cfg(ctx, "home_zone", "America/Los_Angeles"),
-                               agent_address=_cfg(ctx, "agent_address", ""), owner_addresses=list(_cfg(ctx, "owner_addresses", [])),
-                               write_calendar=_cfg(ctx, "write_calendar", ""), read_calendars=list(_cfg(ctx, "read_calendars", [])),
-                               allowlist={k.lower(): int(v) for k, v in dict(_cfg(ctx, "allowlist", {})).items()},
-                               auto_book=bool(_cfg(ctx, "auto_book", True)),
-                               max_len_without_owner_min=int(_cfg(ctx, "max_len_without_owner_min", 59)),
-                               notice_hours=int(_cfg(ctx, "notice_hours", 24)), hold_expiry_hours=int(_cfg(ctx, "hold_expiry_hours", 48)),
-                               max_open_holds=int(_cfg(ctx, "max_open_holds", 12)))
+        profile = _profile_from_config(ctx)
         from freebusy.adapters.google_workspace import GoogleWorkspaceAdapter
-        dispatch = getattr(ctx, "dispatch_tool", None)
         cal = GoogleWorkspaceAdapter(profile.write_calendar, profile.read_calendars, dispatch)
         mail, people = fx.FixtureMail(), {}   # mail transport is the next step; see README
+        outbox = HermesCron(dispatch) if dispatch else Outbox(data / "outbox.jsonl")
     ledger = HoldLedger(data / "holds.json", expiry_hours=profile.hold_expiry_hours, max_open=profile.max_open_holds)
     gate = Gate(profile, ledger, data / "audit.jsonl")
-    sched = Scheduler(profile, cal, mail, ledger, gate, people)
-    return {"profile": profile, "ledger": ledger, "gate": gate, "scheduler": sched, "mail": mail, "cal": cal, "data": data, "mode": mode}
+    sched = Scheduler(profile, cal, mail, ledger, gate, people, outbox=outbox)
+    return {"profile": profile, "ledger": ledger, "gate": gate, "scheduler": sched, "mail": mail, "cal": cal, "data": data, "mode": mode,
+            "ctx": ctx, "outbox": outbox}
 
 
 def _rt() -> dict:
@@ -288,12 +343,31 @@ def _cmd_schedule(raw_args: str = "", **kwargs) -> str:
     rt = _rt()
     parts = (raw_args or "").split()
     if not parts or parts[0] == "help":
-        return ("/schedule demo                   run the fixture scenes\n"
+        return ("/schedule setup                  set up, one question per message (setup <answer>, skip, redo)\n"
+                "/schedule groups                 list groups and their rules\n"
+                "/schedule group <name> <setting> <value>\n"
+                "                                 settings: windows, buffer, length, earliest, horizon, tier, visibility,\n"
+                "                                 members, domains, travel\n"
+                "/schedule reminders              reminders scheduled for you (fixture: the outbox)\n"
+                "/schedule demo                   run the fixture scenes\n"
                 "/schedule profile                show the owner profile\n"
                 "/schedule waiting                threads waiting on you, and why\n"
                 "/schedule approve <thread>       approve what is waiting and finish it now\n"
                 "/schedule <thread> <instruction> approve | yes | go ahead | offer <minutes> | decline\n"
                 "/schedule run <scene>            handle one fixture thread")
+    if parts[0] == "setup":
+        return _cmd_setup((raw_args or "").strip()[len("setup"):].strip())
+    if parts[0] == "groups":
+        ctx = rt.get("ctx")
+        note = "" if rt["mode"] != "fixture" else "\n(Fixture mode: these are your saved groups; the demo runs on Dana's fixture groups.)"
+        return describe(groups_from_config(_cfg(ctx, "groups", {})), str(_cfg(ctx, "default_group", "Work")).lower()) + note
+    if parts[0] == "group":
+        return _cmd_group(parts[1:])
+    if parts[0] == "reminders":
+        jobs = getattr(rt.get("outbox"), "jobs", None)
+        if jobs is None:
+            return "reminders are Hermes scheduled jobs; see /cron list (names start with 'freebusy')"
+        return "\n\n".join(f"{j.kind} at {j.at} via {j.deliver} ({j.thread_id})\n{j.text}" for j in jobs) or "no reminders yet"
     if parts[0] == "profile":
         return json.dumps(to_dict(rt["profile"]), indent=1)
     if parts[0] == "waiting":
@@ -310,9 +384,54 @@ def _cmd_schedule(raw_args: str = "", **kwargs) -> str:
         return run_scenes(quiet=True)
     if parts[0] == "run" and len(parts) > 1 and rt["mode"] == "fixture":
         return _show(rt["scheduler"].handle(rt["mail"].thread(parts[1]), _now()))
-    if len(parts) > 1 and parts[0] not in ("demo", "run", "approve"):
+    if len(parts) > 1 and parts[0] not in ("demo", "run", "approve", "setup", "group", "groups", "reminders"):
         return _show(rt["scheduler"].resume(parts[0], " ".join(parts[1:]), _now(), approved_by="owner via /schedule"))
     return "unknown subcommand; try /schedule help"
+
+
+def _setup_flow() -> SetupFlow:
+    rt = _rt()
+    ctx = rt.get("ctx")
+    if rt.get("mode", "fixture") == "fixture":
+        calendars, fixture = [fx.WORK, fx.PERSONAL, fx.FAMILY], True
+    else:
+        calendars = [c for c in [_cfg(ctx, "write_calendar", ""), *(_cfg(ctx, "read_calendars", []) or [])] if c]
+        fixture = False
+    return SetupFlow(Path(rt.get("data") or _data_dir(ctx)) / "setup.json", lambda k, d: _cfg(ctx, k, d),
+                     lambda k, v: _set_cfg(ctx, k, v), calendars, fixture)
+
+
+def _cmd_setup(rest: str) -> str:
+    """/schedule setup resumes where you left off; /schedule setup <answer> answers; skip keeps the default; redo restarts."""
+    try:
+        flow = _setup_flow()
+        if not rest:
+            return flow.current()
+        if rest.lower() == "redo":
+            return flow.redo()
+        out = flow.answer(rest)
+        _rt()["gate"].audit({"setup": flow.steps[min(flow.state["step"], len(flow.steps) - 1)].key, "done": flow.done})
+        return out
+    except Exception as exc:
+        return f"setup could not continue: {exc}"
+
+
+def _cmd_group(args: list[str]) -> str:
+    """/schedule group <name> <setting> <value>: one edit, saved to config (and to the live profile outside fixture mode)."""
+    rt = _rt()
+    ctx = rt.get("ctx")
+    if len(args) < 3:
+        return "usage: /schedule group <name> <setting> <value>, for example /schedule group Work windows mon-fri 9:00-17:00"
+    groups = groups_from_config(_cfg(ctx, "groups", {}))
+    try:
+        said = set_setting(groups, args[0], args[1], " ".join(args[2:]))
+    except (ValueError, IndexError) as exc:
+        return f"not saved: {exc}"
+    _set_cfg(ctx, "groups", groups_to_config(groups))
+    if rt.get("mode") != "fixture":
+        rt["profile"].groups = groups
+    rt["gate"].audit({"group_setting": said})
+    return said
 
 
 def _cmd_holds(raw_args: str = "", **kwargs) -> str:
@@ -337,6 +456,7 @@ def _cmd_zones(raw_args: str = "", **kwargs) -> str:
 
 def register(ctx) -> None:
     global _RT
+    _load_overlay(ctx)
     try:
         _RT = _build_runtime(ctx)
     except Exception as exc:
@@ -345,6 +465,7 @@ def register(ctx) -> None:
         _RT["gate"] = Gate(_RT["profile"], _RT["ledger"])
         _RT["mail"], _RT["cal"] = fx.FixtureMail(), fx.FixtureCalendar()
         _RT["scheduler"] = Scheduler(_RT["profile"], _RT["cal"], _RT["mail"], _RT["ledger"], _RT["gate"], fx.people())
+        _RT["ctx"], _RT["outbox"] = ctx, _RT["scheduler"].outbox
 
     tools = (("schedule_parse", schemas.SCHEDULE_PARSE, schedule_parse), ("schedule_offer", schemas.SCHEDULE_OFFER, schedule_offer),
              ("schedule_check", schemas.SCHEDULE_CHECK, schedule_check), ("schedule_book", schemas.SCHEDULE_BOOK, schedule_book),
@@ -364,7 +485,7 @@ def register(ctx) -> None:
             except Exception as exc:
                 logger.warning("freebusy: could not register hook %s: %s", hook, exc)
     if hasattr(ctx, "register_command"):
-        for name, fn, desc in (("schedule", _cmd_schedule, "Scheduling assistant: demo, profile, waiting, approve, <thread> <instruction>"),
+        for name, fn, desc in (("schedule", _cmd_schedule, "Scheduling assistant: setup, groups, group, reminders, waiting, approve, <thread> <instruction>, demo"),
                                ("holds", _cmd_holds, "Open slot holds"), ("zones", _cmd_zones, "Stated time zones, or test a phrase")):
             try:
                 ctx.register_command(name, handler=fn, description=desc)
