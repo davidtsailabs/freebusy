@@ -15,8 +15,8 @@ from typing import Optional
 from .adapters.base import CalendarAdapter, MailAdapter, all_busy
 from .holds import HoldLedger
 from .offer import build_offer, check_proposed, still_free
-from .ontology import (Authority, AuthorityTier, Intent, InviteOwner, OwnerProfile, Person, Slot, ThreadState, ThreadStatus,
-                       now_iso)
+from .ontology import (TIER_NAMES, Authority, AuthorityTier, Intent, InviteOwner, OwnerProfile, Person, Slot, ThreadState,
+                       ThreadStatus, now_iso)
 from .parse import (Email, SchedulingRequest, agent_on_recipients, loop_guard, owner_about_booking, owner_at_agent,
                     owner_says_stop, parse_email, parse_instruction, strip_quotes)
 from .policy import Gate
@@ -210,7 +210,7 @@ class Scheduler:
         facts.participants = set(req.participants) | {a for m in thread for a in m.participants()}
         facts.person_id, facts.person_zone = person.id, person.zone
         facts.authority = req.authority
-        facts.tier = self.profile.tier_for(req.authority, req.sender)
+        facts.tier = self.profile.tier_for(req.authority, req.sender, self.profile.group_for(person))
         st.person_id = person.id
         if req.invite_owner != InviteOwner.UNKNOWN.value:
             st.invite_owner = req.invite_owner
@@ -220,7 +220,7 @@ class Scheduler:
             return self._notify(req, "Needs you", f"{person.name} would rather sort it out with you", ask="Take the thread")
         if req.out_of_scope:
             return self._notify(req, "Needs you", f"{person.name} asked about {', '.join(req.out_of_scope)}", ask="Answer them")
-        if facts.tier < AuthorityTier.OFFER:
+        if req.authority == Authority.UNKNOWN.value:      # whatever the tier, nobody introduced them: the owner decides
             st.move(ThreadStatus.AWAITING_OWNER.value, "unknown sender")
             self._wait(req, thread, "unknown_sender", f"{person.name} wrote and nobody introduced them")
             return self._notify(req, "Needs you", f"{person.name} wrote to the assistant and nobody introduced them",
@@ -300,6 +300,7 @@ class Scheduler:
         st, facts = self.state(req.thread_id), self.gate.facts(req.thread_id)
         facts.participants |= {a for m in thread for a in m.participants()}
         facts.tier = max(facts.tier, AuthorityTier.OFFER)     # the owner's own instruction authorises this one reply
+        facts.authority = "owner_instruction"
         person = self.person_for(req.sender)
         first = self.profile.name.split()[0]
         reply = Reply(name=person.name.split()[0], owner_name=self.profile.name,
@@ -407,6 +408,13 @@ class Scheduler:
             return self._offer(req, person, st, thread, now)
         facts = self.gate.facts(req.thread_id)
         facts.person_zone = person.zone
+        if st.invite_owner == InviteOwner.THEM.value and facts.tier < AuthorityTier.BOOK and not facts.owner_approved:
+            # Agreeing a time for their invite is the booking, so below Book it waits for the owner like any other.
+            when = f"{format_day(booked.start_dt(), self.profile.home_zone)} · {format_slot_for(booked.start_dt(), booked.end_dt(), self.profile.home_zone, person.zone)}"
+            st.move(ThreadStatus.AWAITING_OWNER.value, f"{TIER_NAMES[int(facts.tier)]}: the booking waits for the owner")
+            self._wait(req, thread, "approve_first", f"{person.name} picked {when}", slot=booked)
+            return self._notify(req, "Needs you", f"{person.name} picked {when}", ask="Reply approve to accept their invite",
+                                who=person.name)
         if st.invite_owner == InviteOwner.THEM.value:
             st.move(ThreadStatus.AWAITING_INVITE.value, f"they send the invite for {booked.start}")
             reply = Reply(name=person.name.split()[0], lead=f"{format_day(booked.start_dt(), self.profile.home_zone)}, "

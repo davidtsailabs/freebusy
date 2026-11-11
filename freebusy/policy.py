@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .holds import HoldLedger
-from .ontology import AuthorityTier, OwnerProfile, Slot
+from .ontology import TIER_NAMES, AuthorityTier, OwnerProfile, Slot
 from .zones import ABBREVIATIONS
 
 SEND_TOOLS = {"schedule_send", "send_email", "email_send", "gmail_send", "mail_send", "reply_email"}
@@ -37,7 +37,7 @@ class ThreadFacts:
     person_id: str = ""
     person_zone: Optional[str] = None       # IANA, stated only
     authority: str = "unknown"
-    tier: int = AuthorityTier.OBSERVE
+    tier: int = AuthorityTier.TRIAL
     owner_approved: bool = False            # the owner said yes to this thread's booking
     approved_len_min: int = 0               # the owner approved a meeting of up to this length
     offer_rounds: int = 0
@@ -92,8 +92,13 @@ class Gate:
         t = self.facts(str(a.get("thread_id", "")))
         if not a.get("thread_id"):
             return block("a send needs a thread; nothing goes out unattached")
-        if t.tier < AuthorityTier.OFFER:
-            return block(f"authority is '{t.authority}' (tier {int(t.tier)}); tier 1 or higher is needed to reply. Draft for the owner instead.")
+        if t.authority == "unknown" and not t.owner_approved:
+            return block("nobody introduced this sender; the owner decides before anything is sent. Draft for the owner instead.")
+        if t.tier < AuthorityTier.TRIAL:
+            return block(f"authority is '{t.authority}' (tier {int(t.tier)}); nothing may be sent. Draft for the owner instead.")
+        if t.tier == AuthorityTier.TRIAL and not a.get("slots") and not t.owner_approved:
+            return block("Trial (tier 0) sends held times only; any other reply needs tier 1 Offer or the owner's yes. "
+                         "Draft for the owner instead.")
         recipients = {r.lower() for r in [*a.get("to", []), *a.get("cc", [])] if r}
         strangers = recipients - t.participants - {x.lower() for x in self.profile.owner_addresses} - {self.profile.agent_address.lower()}
         if strangers:
@@ -127,7 +132,8 @@ class Gate:
         length = (slot.end_dt() - slot.start_dt()).total_seconds() / 60
         needs_owner = length > self.profile.max_len_without_owner_min and length > t.approved_len_min
         if t.tier < AuthorityTier.BOOK and not t.owner_approved:
-            return block(f"tier {int(t.tier)} may offer but not book; the owner approves with /schedule approve {t.thread_id}",
+            return block(f"tier {int(t.tier)} {TIER_NAMES.get(int(t.tier), '')} may offer but not book; the owner approves with "
+                         f"/schedule approve {t.thread_id}",
                          code="approve_first")
         if needs_owner and not t.owner_approved:
             return block(f"a {int(length)}-minute meeting needs the owner's approval before booking", code="long_meeting")

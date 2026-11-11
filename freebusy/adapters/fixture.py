@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from ..ontology import AuthorityTier, Group, OwnerProfile, Person, Slot, Window
+from ..ontology import AuthorityTier, Group, OwnerProfile, Person, Slot, Window, default_groups
 from ..parse import AGENT_HEADER, Email
 from .base import WrongCalendar
 
@@ -35,7 +35,13 @@ PEOPLE = {
                       zone="America/Los_Angeles", zone_source="stated", stated_at=NOW.isoformat()),
     "owen": Person(id="owen", name="Owen Hale", emails=["owen@brightpathcro.example"], stated_at=NOW.isoformat()),
     "nora": Person(id="nora", name="Nora Lind", emails=["nora@fjordtx.example"], stated_at=NOW.isoformat()),  # zone never stated
+    "amara": Person(id="amara", name="Amara Whitfield", emails=["amara@whitfield.example"], stated_at=NOW.isoformat()),  # family
 }
+ORGS = {"alpineventures.example": "Alpine Ventures", "harborbio.example": "Harbor Bio", "cascadehealth.example": "Cascade Health",
+        "brightpathcro.example": "Brightpath CRO", "fjordtx.example": "Fjord Therapeutics"}
+FAMILY_DOMAIN = "whitfield.example"
+AMARA = "amara@whitfield.example"
+BASE = "Dana's office, 500 Howard St, San Francisco"
 
 
 def people() -> dict[str, Person]:
@@ -47,11 +53,22 @@ def profile() -> OwnerProfile:
     windows = {"mon": [Window("10:00", "15:00")], "wed": [Window("09:30", "16:00")],
                "thu": [Window("08:00", "11:30"), Window("13:00", "16:30")], "fri": [Window("10:00", "14:00")]}
     g = Group(id="default", name="Introduced", windows=windows, buffer_min=30, default_len_min=30,
-              earliest_days_out=3, horizon_days=14, tier=AuthorityTier.OFFER)
+              earliest_days_out=3, horizon_days=14, tier=AuthorityTier.BOOK)
+    fam = default_groups()["family"]
+    fam.members, fam.domains, fam.tier = [AMARA], [FAMILY_DOMAIN], AuthorityTier.BOOK
     return OwnerProfile(name="Dana Whitfield", home_zone="America/Los_Angeles", agent_address=AGENT,
                         owner_addresses=[OWNER], write_calendar=WORK, read_calendars=[PERSONAL, FAMILY],
-                        groups={"default": g}, allowlist={"marisol@cascadehealth.example": AuthorityTier.BOOK},
-                        auto_book=True)
+                        groups={"default": g, "family": fam}, allowlist={"marisol@cascadehealth.example": AuthorityTier.BOOK},
+                        auto_book=True, base_address=BASE)
+
+
+def new_user_profile() -> OwnerProfile:
+    """Dana on day one: the same calendars and addresses, no setup yet, so the two default groups in Trial."""
+    groups = default_groups()
+    groups["family"].domains = [FAMILY_DOMAIN]
+    return OwnerProfile(name="Dana Whitfield", home_zone="America/Los_Angeles", agent_address=AGENT,
+                        owner_addresses=[OWNER], write_calendar=WORK, read_calendars=[PERSONAL, FAMILY],
+                        groups=groups, default_group="work", auto_book=True, base_address=BASE)
 
 
 def _slot(day_offset: int, h1: int, m1: int, h2: int, m2: int) -> Slot:
@@ -170,6 +187,14 @@ def threads() -> dict[str, list[Email]]:
     t["fresh-intro"] = [
         _mail("t13", 1, OWNER, [NORA], [AGENT], "Intro: Nora and Dana",
               "Nora, meet my assistant, cc'd, who will find us a time.\n\nDana", "Mon, 09 Nov 2026 08:45:00 -0800", "Dana Whitfield"),
+    ]
+    # 8. Family: Dana's sister, introduced by Dana. The Family group offers evenings and weekends.
+    t["family-ask"] = [
+        _mail("t14", 1, OWNER, [AMARA], [AGENT], "Catching up", "Amara, my assistant (cc) will find us a time to talk.\n\nDana",
+              "Mon, 09 Nov 2026 08:50:00 -0800", "Dana Whitfield"),
+        _mail("t14", 2, AMARA, [AGENT], [OWNER], "Re: Catching up",
+              "Hi! Could we find 30 minutes for a call this week? Evenings or the weekend are easiest.\n\nAmara",
+              "Mon, 09 Nov 2026 09:10:00 -0800", "Amara Whitfield"),
     ]
     # Loop guards, for the tests: an auto-reply and our own mail.
     t["auto-reply"] = [

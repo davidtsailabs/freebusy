@@ -43,10 +43,19 @@ class Authority(str, Enum):
 
 
 class AuthorityTier(IntEnum):
-    OBSERVE = 0   # read, draft for the owner, send nothing
-    OFFER = 1     # reply with held slots, ask the zone, hold
-    BOOK = 2      # book on a fitting stated time, clear holds, notify
-    MANAGE = 3    # also reschedule and cancel (out of scope for 0.1)
+    """How far the agent may go on its own with an introduced or allowlisted sender.
+
+    Unknown senders never get a reply without the owner, whatever the tier: that rule is
+    the sender's authority (``Authority.UNKNOWN``), checked by the engine and the gate.
+    """
+    TRIAL = 0     # offers held slots in the thread under the rules, so a new user sees it work; the booking waits for the owner
+    OFFER = 1     # replies with held slots, asks the zone, holds; the booking waits for the owner
+    BOOK = 2      # also books a fitting stated time, clears holds, notifies the owner
+    MANAGE = 3    # also reschedules and cancels (defined, not implemented)
+    OBSERVE = 0   # the 0.1 name for tier 0, kept as an alias of TRIAL
+
+
+TIER_NAMES = {0: "Trial", 1: "Offer", 2: "Book", 3: "Manage"}
 
 
 class ThreadStatus(str, Enum):
@@ -82,7 +91,7 @@ class Person:
     source: str = Source.STATED.value
     stated_at: str = field(default_factory=now_iso)
     group_id: Optional[str] = None
-    tier: int = AuthorityTier.OBSERVE
+    tier: int = AuthorityTier.TRIAL
 
 
 @dataclass
@@ -94,7 +103,14 @@ class Window:
 
 @dataclass
 class Group:
-    """A class of people the owner treats alike (clients, sponsors, friends)."""
+    """A class of people the owner treats alike (Work, Family, sponsors).
+
+    ``members`` are addresses and ``domains`` are mail domains; a sender matching either
+    belongs here. ``tier`` caps what an introduced sender in this group gets.
+    ``visibility``: "busy_only" offers inside the windows and, when the person stated a zone,
+    inside their 9 to 5 too; "full" offers every free minute inside the windows, any day.
+    ``travel_buffers``: opt-in; blocks travel time around the owner's in-person events.
+    """
     id: str
     name: str
     windows: dict[str, list[Window]] = field(default_factory=dict)  # weekday -> windows
@@ -102,8 +118,16 @@ class Group:
     default_len_min: int = 30
     earliest_days_out: int = 3
     horizon_days: int = 14
-    tier: int = AuthorityTier.OFFER
+    tier: int = AuthorityTier.BOOK
     visibility: str = "busy_only"
+    members: list[str] = field(default_factory=list)
+    domains: list[str] = field(default_factory=list)
+    travel_buffers: bool = False
+
+    def matches(self, address: str) -> bool:
+        a = (address or "").lower()
+        return bool(a) and (a in {m.lower() for m in self.members}
+                            or a.rsplit("@", 1)[-1] in {d.lower().lstrip("@") for d in self.domains})
 
 
 @dataclass
@@ -170,23 +194,34 @@ class OwnerProfile:
     max_open_holds: int = 12
     hold_expiry_hours: int = 48
     max_offer_rounds: int = 2
+    base_address: str = ""          # where the owner starts from, for travel buffers; never sent anywhere
+    reminders: "Reminders" = field(default_factory=lambda: Reminders())
 
     def group_for(self, person: Optional[Person]) -> Group:
-        gid = (person.group_id if person and person.group_id else None) or self.default_group
-        if gid in self.groups:
-            return self.groups[gid]
+        """The person's own group, else the group whose members or domains match their address, else the default."""
+        if person and person.group_id and person.group_id in self.groups:
+            return self.groups[person.group_id]
+        for g in self.groups.values():
+            if person and any(g.matches(e) for e in person.emails):
+                return g
+        if self.default_group in self.groups:
+            return self.groups[self.default_group]
         return default_group()
 
-    def tier_for(self, authority: str, sender: str = "") -> int:
+    def tier_for(self, authority: str, sender: str = "", group: Optional[Group] = None) -> int:
+        """Owner: Manage. An allowlisted address: the tier set for it. Introduced: Book with auto-book on,
+        Offer with it off, never above the group's tier (a group in Trial keeps introduced senders in Trial).
+        Unknown: tier 0, and the unknown-sender rule still stops any reply without the owner."""
         if authority == Authority.OWNER.value:
             return AuthorityTier.MANAGE
         if sender and sender.lower() in self.allowlist:
             return int(self.allowlist[sender.lower()])
         if authority == Authority.INTRODUCED.value:
-            return AuthorityTier.BOOK if self.auto_book else AuthorityTier.OFFER
+            base = AuthorityTier.BOOK if self.auto_book else AuthorityTier.OFFER
+            return min(base, int(group.tier)) if group is not None else base
         if authority == Authority.ALLOWLISTED.value:
             return AuthorityTier.OFFER
-        return AuthorityTier.OBSERVE
+        return AuthorityTier.TRIAL
 
 
 @dataclass
@@ -210,11 +245,42 @@ class ThreadState:
 
 
 def default_group() -> Group:
-    """Sensible defaults: weekdays 10:00 to 16:00 in the owner's home zone."""
+    """The fallback when a profile has no groups: weekdays 10:00 to 16:00 in the owner's home zone."""
     return Group(
         id="default", name="Default",
         windows={d: [Window("10:00", "16:00")] for d in WEEKDAYS[:5]},
     )
+
+
+def default_groups() -> dict[str, Group]:
+    """A new owner's two groups, both in Trial until setup is finished.
+
+    Work: weekdays 9 AM to 5 PM in the owner's zone, busy-only. Family: full availability,
+    every day 7 AM to 9 PM. Travel buffers off for both.
+    """
+    work = Group(id="work", name="Work", windows={d: [Window("09:00", "17:00")] for d in WEEKDAYS[:5]},
+                 buffer_min=15, default_len_min=30, earliest_days_out=1, horizon_days=14, tier=AuthorityTier.TRIAL,
+                 visibility="busy_only")
+    family = Group(id="family", name="Family", windows={d: [Window("07:00", "21:00")] for d in WEEKDAYS},
+                   buffer_min=0, default_len_min=30, earliest_days_out=0, horizon_days=14, tier=AuthorityTier.TRIAL,
+                   visibility="full")
+    return {"work": work, "family": family}
+
+
+@dataclass
+class Reminders:
+    """What happens around every event the agent books. On by default.
+
+    The other person never gets a reminder from the agent: every text and briefing goes to the owner.
+    """
+    on: bool = True
+    popup_min: int = 10              # a pop-up on the event itself
+    email_min: int = 1440            # an email from the calendar, one day before
+    text_before_min: int = 60        # a text to the owner before the meeting
+    channel: str = "email"           # telegram | sms | imessage | email
+    target: str = ""                 # the owner's own chat, number or address; blank = that channel's home
+    briefing: bool = True            # a day-before briefing to the owner
+    briefing_at: str = "17:00"       # the evening before, in the owner's zone
 
 
 # ---- JSON (de)serialization -------------------------------------------------
@@ -238,7 +304,7 @@ def to_json(obj: Any, **kw) -> str:
 _NESTED = {
     Hold: {"slot": Slot},
     Group: {"windows": ("dict_of_lists", Window)},
-    OwnerProfile: {"groups": ("dict", Group)},
+    OwnerProfile: {"groups": ("dict", Group), "reminders": Reminders},
     ThreadState: {"constraints": ("list", Constraint)},
 }
 

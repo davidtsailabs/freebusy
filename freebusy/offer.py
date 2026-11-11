@@ -95,7 +95,8 @@ def build_offer(profile: OwnerProfile, group: Group, busy: list[Slot], ledger: H
     candidates: list[Slot] = []
     day = first
     while day <= last:
-        for s, e in free_ranges_for_day(day, group, busy, group.buffer_min, profile.home_zone, person_zone):
+        clip = person_zone if group.visibility != "full" else None     # "full": every free minute in the windows
+        for s, e in free_ranges_for_day(day, group, busy, group.buffer_min, profile.home_zone, clip):
             if s < notice or (e - s) < timedelta(minutes=length):
                 continue
             candidates.append(Slot(s.isoformat(), e.isoformat()))
