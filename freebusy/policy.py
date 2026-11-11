@@ -21,9 +21,13 @@ from .holds import HoldLedger
 from .ontology import TIER_NAMES, AuthorityTier, OwnerProfile, Slot
 from .zones import ABBREVIATIONS
 
-SEND_TOOLS = {"schedule_send", "send_email", "email_send", "gmail_send", "mail_send", "reply_email"}
+# The gate covers this plugin's own actions. Other plugins' tools pass untouched unless the owner
+# turns on ``vet_other_tools``, which holds the named send and calendar-write tools to the same rules.
+SEND_TOOLS = {"schedule_send"}
 REMIND_TOOLS = {"schedule_remind"}
-WRITE_TOOLS = {"schedule_book", "calendar_create_event", "create_event", "calendar_write", "book_event"}
+WRITE_TOOLS = {"schedule_book"}
+OTHER_SEND_TOOLS = {"send_email", "email_send", "gmail_send", "mail_send", "reply_email"}
+OTHER_WRITE_TOOLS = {"calendar_create_event", "create_event", "calendar_write", "book_event"}
 
 _ZONE_WORDS = re.compile(r"(?<![A-Za-z])(" + "|".join(k for k in ABBREVIATIONS if len(k) <= 4) + r")(?![A-Za-z])", re.IGNORECASE)
 _SECRET_KEYS = re.compile(r"(token|secret|password|passwd|authorization|api[_-]?key|credential|cookie|bearer)", re.IGNORECASE)
@@ -63,7 +67,10 @@ def redact(obj: Any) -> Any:
 
 
 class Gate:
-    def __init__(self, profile: OwnerProfile, ledger: HoldLedger, audit_path: Optional[Path] = None):
+    def __init__(self, profile: OwnerProfile, ledger: HoldLedger, audit_path: Optional[Path] = None,
+                 vet_other_tools: bool = False):
+        self.send_tools = SEND_TOOLS | (OTHER_SEND_TOOLS if vet_other_tools else set())
+        self.write_tools = WRITE_TOOLS | (OTHER_WRITE_TOOLS if vet_other_tools else set())
         self.profile = profile
         self.ledger = ledger
         self.audit_path = Path(audit_path) if audit_path else None
@@ -77,9 +84,9 @@ class Gate:
     def pre_tool_call(self, tool_name: str = "", args: Optional[dict] = None, task_id: str = "", **kwargs) -> Optional[dict]:
         args = args or {}
         try:
-            if tool_name in SEND_TOOLS:
+            if tool_name in self.send_tools:
                 verdict = self._check_send(args)
-            elif tool_name in WRITE_TOOLS:
+            elif tool_name in self.write_tools:
                 verdict = self._check_write(args)
             elif tool_name in REMIND_TOOLS:
                 verdict = self._check_remind(args)

@@ -128,11 +128,11 @@ def _build_runtime(ctx) -> dict:
     else:
         profile = _profile_from_config(ctx)
         from freebusy.adapters.google_workspace import GoogleWorkspaceAdapter
-        cal = GoogleWorkspaceAdapter(profile.write_calendar, profile.read_calendars, dispatch)
+        cal = GoogleWorkspaceAdapter(profile.write_calendar, profile.read_calendars)   # inert stub: every call raises
         mail, people = fx.FixtureMail(), {}   # mail transport is the next step; see README
         outbox = HermesCron(dispatch) if dispatch else Outbox(data / "outbox.jsonl")
     ledger = HoldLedger(data / "holds.json", expiry_hours=profile.hold_expiry_hours, max_open=profile.max_open_holds)
-    gate = Gate(profile, ledger, data / "audit.jsonl")
+    gate = Gate(profile, ledger, data / "audit.jsonl", vet_other_tools=bool(_cfg(ctx, "vet_other_tools", False)))
     sched = Scheduler(profile, cal, mail, ledger, gate, people, outbox=outbox)
     return {"profile": profile, "ledger": ledger, "gate": gate, "scheduler": sched, "mail": mail, "cal": cal, "data": data, "mode": mode,
             "ctx": ctx, "outbox": outbox}

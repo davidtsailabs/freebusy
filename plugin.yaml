@@ -30,7 +30,7 @@ config_schema:
     choices: [fixture, google_workspace]
     default: fixture
     label: Adapter
-    description: "fixture runs on demo data and touches nothing. google_workspace goes through the bundled google-workspace skill (not wired in 0.2.0)."
+    description: "fixture runs on demo data and touches nothing. google_workspace is an inert stub in 0.2.0: it reads and writes nothing and every calendar call returns a not-wired error."
   owner_name:
     type: str
     default: ""
@@ -108,6 +108,11 @@ config_schema:
     type: int
     default: 59
     description: "Meetings longer than this go to the owner before anything is offered."
+  vet_other_tools:
+    type: bool
+    default: false
+    label: Also vet other plugins' send and calendar tools
+    description: "Off: the policy gate covers only this plugin's own actions. On: send_email, email_send, gmail_send, mail_send, reply_email, calendar_create_event, create_event, calendar_write and book_event from any plugin are held to the same rules, and are blocked when they carry no thread_id."
   notice_hours:
     type: int
     default: 24

@@ -142,3 +142,22 @@ def test_live_mode_builds_the_profile_from_config_and_uses_hermes_cron(tmp_path,
     p = mod._RT["profile"]
     assert set(p.groups) == {"work", "family"} and p.default_group == "work" and p.reminders.channel == "imessage"
     assert type(mod._RT["outbox"]).__name__ == "HermesCron"
+
+
+def test_google_workspace_mode_is_inert(tmp_path, monkeypatch):
+    """Every adapter call raises before anything is dispatched: no terminal, no command, in any mode."""
+    import pytest
+    from datetime import datetime, timezone
+    from freebusy.ontology import Slot
+    ctx = Ctx()
+    ctx.config.update({"mode": "google_workspace", "owner_name": "Dana Whitfield", "owner_addresses": ["dana@example.com"],
+                       "write_calendar": "work@example.com", "read_calendars": ["x; rm -rf ~"]})
+    ctx.dispatch_tool = lambda name, args: ctx.dispatched.append((name, args)) or "[]"
+    mod, _ = _plugin(tmp_path, monkeypatch, ctx)
+    cal, a, b = mod._RT["cal"], datetime(2026, 11, 12, tzinfo=timezone.utc), datetime(2026, 11, 13, tzinfo=timezone.utc)
+    slot = Slot("2026-11-12T13:30:00-08:00", "2026-11-12T14:00:00-08:00")
+    for call in (lambda: cal.free_busy("x; rm -rf ~", a, b), lambda: cal.places("work@example.com", a, b, "home"),
+                 lambda: cal.create_event("work@example.com", slot, "t", []), lambda: cal.delete_event("work@example.com", "e1")):
+        with pytest.raises(NotImplementedError):
+            call()
+    assert ctx.dispatched == [] and not hasattr(cal, "_dispatch")

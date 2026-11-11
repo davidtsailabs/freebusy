@@ -1,6 +1,8 @@
 """Reminders at booking: on the event, a text to the owner, a day-before briefing; never to the other person."""
 
 import json
+
+import pytest
 from datetime import timedelta
 
 from freebusy.adapters import fixture as fx
@@ -96,8 +98,25 @@ def test_outbox_writes_jsonl(tmp_path):
 
 def test_hermes_cron_makes_one_run_once_job():
     calls = []
-    cron = HermesCron(lambda name, args: calls.append((name, args)) or json.dumps({"job_id": "j1"}))
+    cron = HermesCron(lambda name, args: calls.append((name, args)) or json.dumps({"job_id": "j1"}), in_cron=lambda: False)
     assert cron.schedule(Job("text", "2026-11-12T09:30:00-08:00", "telegram", "In 1 hour: Lukas", "t1")) == "j1"
     name, args = calls[0]
     assert name == "cronjob_manage" and args["action"] == "create" and args["schedule"] == "2026-11-12T09:30:00-08:00"
     assert args["deliver"] == "telegram" and args["repeat"] == 1 and "In 1 hour: Lukas" in args["prompt"]
+
+
+def test_hermes_cron_refuses_inside_a_cron_run_unless_the_owner_allows_it(monkeypatch):
+    from freebusy.reminders import SchedulingRefused, agent_scheduling_allowed, in_cron_run
+    calls = []
+    dispatch = lambda name, args: calls.append((name, args)) or json.dumps({"job_id": "j1"})
+    job = Job("text", "2026-11-12T09:30:00-08:00", "telegram", "In 1 hour: Lukas", "t1")
+    with pytest.raises(SchedulingRefused):
+        HermesCron(dispatch, in_cron=lambda: True, allowed=lambda: False).schedule(job)
+    assert calls == []
+    assert HermesCron(dispatch, in_cron=lambda: True, allowed=lambda: True).schedule(job) == "j1"
+    assert HermesCron(dispatch, in_cron=lambda: False, allowed=lambda: False).schedule(job) == "j1"
+    # the defaults: the marker Hermes sets for cron-spawned agents, and config that cannot be read counts as no
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    assert in_cron_run() and not agent_scheduling_allowed()
+    monkeypatch.delenv("HERMES_CRON_SESSION")
+    assert not in_cron_run()

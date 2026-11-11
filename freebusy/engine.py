@@ -20,7 +20,7 @@ from .ontology import (TIER_NAMES, Authority, AuthorityTier, Intent, InviteOwner
 from .parse import (Email, SchedulingRequest, agent_on_recipients, loop_guard, owner_about_booking, owner_at_agent,
                     owner_says_stop, parse_email, parse_instruction, split_signature, strip_quotes)
 from .policy import Gate
-from .reminders import Job, Outbox, briefing_text, briefing_time, deliver_target, event_reminders, first_ask, open_questions, reminder_text
+from .reminders import Job, Outbox, SchedulingRefused, briefing_text, briefing_time, deliver_target, event_reminders, first_ask, open_questions, reminder_text
 from .travel import travel_blocks
 from .render import OwnerNote, Reply, Row, note_subject, render_html, render_owner_note, render_text
 from .zones import format_day, format_slot_for, label_for, zone_line
@@ -527,7 +527,11 @@ class Scheduler:
             verdict = self.gate.pre_tool_call("schedule_remind", {"thread_id": j.thread_id, "deliver": j.deliver, "kind": j.kind})
             if verdict:
                 continue
-            j.job_id = self.outbox.schedule(j)
+            try:
+                j.job_id = self.outbox.schedule(j)
+            except SchedulingRefused as exc:      # a cron run without the owner's opt-in: no job, one audit line
+                self.gate.audit({"tool": "schedule_remind", "thread": j.thread_id, "verdict": "block", "reason": str(exc)})
+                continue
             done.append(j)
         return done
 

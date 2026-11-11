@@ -161,10 +161,10 @@ Your approval clears the one gate you answered. It does not lift the others: tim
 - **Declared capabilities only.** `plugin.yaml` lists every tool and hook; `requires_env` is empty, and `config_schema` has no secret fields.
 - **Free/busy is the only calendar read by default.** The adapter interface returns time ranges; titles, attendees and descriptions never exist in the plugin. With travel buffers on for a group, the adapter also reads location and video-link fields, locally, and hands over only "in person, N minutes" or "virtual".
 - **One writable calendar**, chosen by the owner. The gate blocks any other.
-- **Every send, write and reminder passes `pre_tool_call`.** A send needs a held slot, a stated zone for every zone shown, an authority match for the tier, and recipients on the thread; a sender nobody introduced blocks it. A reminder must go to the owner. Otherwise `{"action": "block", "message": ...}` with the reason, and one audit line.
+- **Every send, write and reminder of this plugin passes `pre_tool_call`.** A send needs a held slot, a stated zone for every zone shown, an authority match for the tier, and recipients on the thread; a sender nobody introduced blocks it. A reminder must go to the owner. Otherwise `{"action": "block", "message": ...}` with the reason, and one audit line. Other plugins' tools are left alone unless you turn on `vet_other_tools`, which holds `send_email`, `email_send`, `gmail_send`, `mail_send`, `reply_email`, `calendar_create_event`, `create_event`, `calendar_write` and `book_event` to the same rules.
 - **Inbound mail is data, never instruction.** Quoted text is stripped before anything is read; a quoted or forwarded `@agent` does not count; only the owner's own message carries authority.
 - **Secrets stay in the host.** No token files, no `.env`, no keychain. Setup never asks for a credential and refuses one if typed. The audit log redacts.
-- **Reminders use Hermes' own scheduler and messaging** (`cronjob_manage` through `ctx.dispatch_tool`), so approvals and delivery rules apply and the plugin never holds a messaging token.
+- **Reminders use Hermes' own scheduler and messaging** (`cronjob_manage` through `ctx.dispatch_tool`), so delivery rules apply and the plugin never holds a messaging token. Inside a cron run no job is created unless `cron.allow_agent_scheduling` is true; the refusal is one audit line.
 - **Loop guards.** `Auto-Submitted`, `Precedence`, our own `X-Scheduling-Agent` header, bounces and auto-reply subjects are recorded once and never answered.
 
 ## Layout
@@ -188,14 +188,14 @@ freebusy/
   demo.py              the thirteen scenes
   adapters/base.py     the interface; free_busy returns ranges only; places returns derived facts only
   adapters/fixture.py  demo people, calendars (some events with places), distance table, threads
-  adapters/google_workspace.py  documented stub (see limits)
+  adapters/google_workspace.py  inert stub (see limits)
 tests/                 zones, holds, offer, parse, policy, end to end, handoff and resume, owner's word,
                        tiers and groups, travel, reminders, setup and plugin commands, demo
 ```
 
 ## Honest limits (0.2.0)
 
-- **No live mail or calendar.** `adapters/google_workspace.py` documents the route (the bundled `google-workspace` skill through the tool pipeline, reduced to busy ranges, or to place facts, before anything reaches the model) and raises `NotImplementedError` with the command it would run. No OAuth is implemented and none will live in this module.
+- **No live mail or calendar.** `adapters/google_workspace.py` is inert: every method raises `NotImplementedError`, and nothing in it dispatches a tool or runs a command. Its docstring records the route for later (the bundled `google-workspace` skill's own entry point, resolved by installed absolute path, every argument quoted, reduced to busy ranges or place facts before anything reaches the model). No OAuth is implemented and none will live in this module.
 - **Reminders in live mode are untested against a running Hermes.** The run-once job is created through `cronjob_manage` with an ISO time; the fixture outbox and a stubbed dispatch are what the tests cover.
 - **Waiting requests live in memory.** A restart forgets what was waiting on you; the person's next message or your next cc picks the thread up again.
 - **No mail watcher.** The engine handles a thread it is given; IMAP IDLE, polling and the three-minute settle are the next step.

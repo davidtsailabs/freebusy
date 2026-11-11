@@ -15,6 +15,7 @@ d. Never a reminder to the other person. The gate checks every reminder's target
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, time, timedelta
@@ -136,14 +137,46 @@ class Outbox:
         return f"outbox-{len(self.jobs)}"
 
 
-class HermesCron:
-    """Live mode: one run-once scheduled job per message, through Hermes' own cron tool and delivery."""
+class SchedulingRefused(RuntimeError):
+    """Raised instead of creating a job when Hermes' own rule says an agent may not schedule here."""
 
-    def __init__(self, dispatch: Callable[[str, dict], str]):
+
+def in_cron_run() -> bool:
+    """True inside a Hermes cron run (the session marker Hermes sets for cron-spawned agents)."""
+    try:
+        from gateway.session_context import get_session_env
+        raw = get_session_env("HERMES_CRON_SESSION", "")
+    except Exception:
+        raw = os.environ.get("HERMES_CRON_SESSION", "")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def agent_scheduling_allowed() -> bool:
+    """Hermes' ``cron.allow_agent_scheduling``. Unreadable config counts as no."""
+    try:
+        from hermes_cli.config import load_config
+        return bool(((load_config() or {}).get("cron") or {}).get("allow_agent_scheduling"))
+    except Exception:
+        return False
+
+
+class HermesCron:
+    """Live mode: one run-once scheduled job per message, through Hermes' own cron tool and delivery.
+
+    ``ctx.dispatch_tool`` does not apply the toolset filter that keeps a cron-run agent from scheduling,
+    so the same rule is applied here: inside a cron run, no job is created unless the owner has set
+    ``cron.allow_agent_scheduling: true``.
+    """
+
+    def __init__(self, dispatch: Callable[[str, dict], str], in_cron: Callable[[], bool] = in_cron_run,
+                 allowed: Callable[[], bool] = agent_scheduling_allowed):
         self._dispatch = dispatch
+        self._in_cron, self._allowed = in_cron, allowed
         self.created: list[str] = []
 
     def schedule(self, job: Job) -> str:
+        if self._in_cron() and not self._allowed():
+            raise SchedulingRefused("inside a cron run and cron.allow_agent_scheduling is off; no reminder job was created")
         prompt = ("Deliver this note to the owner exactly as written. Do not add to it, do not call tools, "
                   "and do not contact anyone else.\n\n" + job.text)
         raw = self._dispatch(CRON_TOOL, {"action": "create", "name": job.name or f"freebusy {job.kind} {job.thread_id}",

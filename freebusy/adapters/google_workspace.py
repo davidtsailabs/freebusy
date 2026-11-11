@@ -1,35 +1,40 @@
-"""Google Workspace adapter: a documented stub for 0.2.0.
+"""Google Workspace adapter: an inert stub for 0.2.0. Every method raises ``NotImplementedError``.
 
-How this is meant to work in Hermes, and why nothing here holds a credential:
+Nothing in this module dispatches a tool, runs a command or reads a credential.
+Choosing ``mode: google_workspace`` builds the owner's profile from config and
+then stops here: no calendar is read and none is written.
 
-* Hermes has no built-in calendar tools. The accepted route is the bundled
-  ``google-workspace`` skill, whose script runs through the normal tool
-  pipeline (``ctx.dispatch_tool("terminal", {...})`` or the skill's own tool),
-  so approvals, redaction and budgets apply and the plugin never sees a token.
-* The script is asked for events on one calendar between two instants. This
-  adapter reduces the answer to busy ranges before anything reaches the model:
-  ``reduce_to_busy`` keeps start and end and drops every other field.
-* Writes go to one calendar, chosen by the owner at setup, through the same
-  script. The adapter refuses any other calendar id before dispatching.
+What is kept, because it is pure and tested: ``reduce_to_busy`` and
+``reduce_to_places``, which strip an event list to start and end (or to a
+travel fact) before anything could reach the model.
+
+The route, for when it is wired:
+
+* Hermes has no built-in calendar tools. Reads and writes go through the
+  bundled ``google-workspace`` skill's real entry point
+  (``scripts/google_api.py`` / ``scripts/gws_bridge.py``), so the plugin never
+  sees a token.
+* The script is resolved by the skill's installed absolute path, never a path
+  relative to the terminal's working directory.
+* Every argument is passed through ``shlex.quote``; calendar ids are config
+  values and are treated as untrusted text.
+* If the user has turned the terminal toolset off, the adapter refuses instead
+  of dispatching around that choice.
+* Writes go to one calendar, chosen by the owner at setup. The adapter refuses
+  any other calendar id first.
 * OAuth is not implemented here and never will be in this module: no token
-  files, no ``.env`` reads, no keychain. If a future version needs its own
-  client it declares an ``oauth:`` block in ``plugin.yaml`` and calls
-  ``credentialed_provider_request``, so Hermes attaches the token.
-
-Until the dispatch is wired, every call raises ``NotImplementedError`` with
-the command it would run, so a reviewer can see the exact surface.
+  files, no ``.env`` reads, no keychain.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from ..ontology import Slot
 from .base import WrongCalendar
 
-SKILL = "google-workspace"
-SCRIPT = "scripts/gws.py"      # the bundled skill's entry point, as documented in its SKILL.md
+NOT_WIRED = "the Google Workspace route is not wired in this version; use mode: fixture"
 
 
 def reduce_to_busy(events: list[dict[str, Any]]) -> list[Slot]:
@@ -66,44 +71,25 @@ def reduce_to_places(events: list[dict[str, Any]], base: str, default_min: int =
 
 
 class GoogleWorkspaceAdapter:
-    def __init__(self, write_calendar: str, read_calendars: list[str],
-                 dispatch: Optional[Callable[[str, dict], str]] = None):
+    """Inert in 0.2.0: holds the calendar ids, refuses a wrong write calendar, and raises on every call."""
+
+    def __init__(self, write_calendar: str, read_calendars: list[str]):
         self.write_calendar = write_calendar
         self.read_calendars = list(read_calendars)
-        self._dispatch = dispatch     # ctx.dispatch_tool, injected by the plugin; None in fixture mode
-
-    def _command(self, *parts: str) -> str:
-        return " ".join(["python3", f"skills/{SKILL}/{SCRIPT}", *parts])
 
     def free_busy(self, calendar: str, start: datetime, end: datetime) -> list[Slot]:
-        cmd = self._command("calendar", "events", "--calendar", calendar, "--from", start.isoformat(),
-                            "--to", end.isoformat(), "--json")
-        if self._dispatch is None:
-            raise NotImplementedError(f"would dispatch through the tool pipeline: {cmd}")
-        raw = self._dispatch("terminal", {"command": cmd})
-        import json
-        return reduce_to_busy(json.loads(raw) if isinstance(raw, str) else raw)
+        raise NotImplementedError(NOT_WIRED)
 
     def places(self, calendar: str, start: datetime, end: datetime, base: str, default_min: int = 30) -> list:
-        cmd = self._command("calendar", "events", "--calendar", calendar, "--from", start.isoformat(),
-                            "--to", end.isoformat(), "--fields", "start,end,location,hangoutLink,conferenceData,transparency", "--json")
-        if self._dispatch is None:
-            raise NotImplementedError(f"would dispatch through the tool pipeline: {cmd}")
-        raw = self._dispatch("terminal", {"command": cmd})
-        import json
-        return reduce_to_places(json.loads(raw) if isinstance(raw, str) else raw, base, default_min)
+        raise NotImplementedError(NOT_WIRED)
 
     def create_event(self, calendar: str, slot: Slot, title: str, attendees: list[str],
                      description: str = "", tentative: bool = False, reminders: Optional[list[dict]] = None) -> str:
         if calendar != self.write_calendar:
             raise WrongCalendar(f"writes go to {self.write_calendar} only")
-        guest_flags = [flag for a in attendees for flag in ("--attendee", a)]
-        reminder_flags = [flag for r in (reminders or []) for flag in ("--reminder", f"{r['method']}:{r['minutes']}")]
-        cmd = self._command("calendar", "create", "--calendar", calendar, "--start", slot.start, "--end", slot.end,
-                            "--title", title, *guest_flags, *reminder_flags, "--conference")
-        raise NotImplementedError(f"would dispatch through the tool pipeline: {cmd}")
+        raise NotImplementedError(NOT_WIRED)
 
     def delete_event(self, calendar: str, event_id: str) -> None:
         if calendar != self.write_calendar:
             raise WrongCalendar(f"writes go to {self.write_calendar} only")
-        raise NotImplementedError(self._command("calendar", "delete", "--calendar", calendar, "--id", event_id))
+        raise NotImplementedError(NOT_WIRED)

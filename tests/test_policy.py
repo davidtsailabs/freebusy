@@ -76,3 +76,14 @@ def test_other_tools_pass_and_audit_redacts(world):
     assert line["authorization"] == "[redacted]" and "ya29" not in line["note"] and line["args"]["api_key"] == "[redacted]"
     text = world["gate"].audit_path.read_text()
     assert "Bearer abc" not in text and json.loads(text.splitlines()[-1])["tool"] == "x"
+
+
+def test_other_plugins_tools_pass_unless_the_owner_opts_in(world):
+    from freebusy.policy import Gate
+    g = world["gate"]
+    for tool in ("send_email", "gmail_send", "reply_email", "create_event", "calendar_write"):
+        assert g.pre_tool_call(tool, {"to": ["anyone@example.org"], "body": "hi"}) is None     # no thread_id, not ours: untouched
+    assert g.pre_tool_call("schedule_send", {"to": [fx.LUKAS], "body": "hi"})["action"] == "block"
+    strict = Gate(g.profile, g.ledger, vet_other_tools=True)
+    assert "needs a thread" in strict.pre_tool_call("send_email", {"to": ["anyone@example.org"], "body": "hi"})["message"]
+    assert strict.pre_tool_call("create_event", {"calendar": "other"})["action"] == "block"
