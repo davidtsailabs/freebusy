@@ -29,7 +29,7 @@ def test_text_and_briefing_go_to_the_owner_only(world):
     start = b.booked.start_dt()
     assert kinds["text"].at == (start - timedelta(hours=1)).isoformat()
     assert kinds["briefing"].at.startswith((start - timedelta(days=1)).date().isoformat()) and "T17:00" in kinds["briefing"].at
-    assert all(j.deliver == "email" for j in b.reminders)
+    assert all(j.deliver == "telegram" for j in b.reminders)   # the demo owner chose Telegram at setup
     # Nothing went to Lukas but the booking confirmation.
     to_lukas = [m for m in world["mail"].sent if fx.LUKAS in m["to"]]
     assert len(to_lukas) == 2 and "Booked:" in to_lukas[-1]["text"]
