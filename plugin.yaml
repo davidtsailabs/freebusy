@@ -30,7 +30,7 @@ config_schema:
     choices: [fixture, google_workspace]
     default: fixture
     label: Adapter
-    description: "fixture runs on demo data and touches nothing. google_workspace goes through the bundled google-workspace skill (not wired in 0.1.0)."
+    description: "fixture runs on demo data and touches nothing. google_workspace goes through the bundled google-workspace skill (not wired in 0.2.0)."
   owner_name:
     type: str
     default: ""

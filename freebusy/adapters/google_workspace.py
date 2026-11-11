@@ -1,4 +1,4 @@
-"""Google Workspace adapter: a documented stub for 0.1.0.
+"""Google Workspace adapter: a documented stub for 0.2.0.
 
 How this is meant to work in Hermes, and why nothing here holds a credential:
 
