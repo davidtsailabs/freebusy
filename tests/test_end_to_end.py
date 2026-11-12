@@ -113,8 +113,9 @@ def test_plugin_registers_with_a_bare_context(tmp_path, monkeypatch):
     ctx = Ctx()
     mod.register(ctx)
     assert set(ctx.tools) == {"schedule_parse", "schedule_offer", "schedule_check", "schedule_book", "schedule_holds", "schedule_resume"}
-    assert set(ctx.hooks) == {"pre_tool_call", "post_tool_call", "pre_llm_call", "post_approval_response"}
-    assert set(ctx.commands) == {"schedule", "holds", "zones"}
+    assert set(ctx.hooks) == {"pre_tool_call", "post_tool_call", "pre_llm_call", "post_approval_response", "post_gateway_admission"}
+    assert set(ctx.commands) == {"schedule", "freebusy", "holds", "zones"}
+    assert ctx.hooks["post_gateway_admission"](platform="telegram", source={"user_id": "1"}, text="Tuesday?") is None   # fixture: agent as usual
     assert "freebusy facts" in ctx.hooks["pre_llm_call"](session_id="s", user_message="x")["context"]
     assert ctx.hooks["pre_tool_call"](tool_name="read_file", args={}) is None
     blocked = ctx.hooks["pre_tool_call"](tool_name="schedule_book", args={"thread_id": "t1", "calendar": "other", "slot": {"start": "a", "end": "b"}})

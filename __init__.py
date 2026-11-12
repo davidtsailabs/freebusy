@@ -1,7 +1,9 @@
 """freebusy plugin: registration with Hermes.
 
-Wires six tools, four hooks and three slash commands (/schedule with setup, groups,
-group, reminders and the owner's controls; /holds; /zones). Every hook accepts
+Wires six tools, five hooks, four slash commands (/schedule with setup, groups,
+group, reminders and the owner's controls; /freebusy with connect, doctor, check
+and notes; /holds; /zones) and one CLI command (``hermes freebusy password``,
+which stores an app password in the system keychain). Every hook accepts
 **kwargs and never raises. Anything the host context lacks is skipped
 quietly. In fixture mode nothing here reaches a network or a credential.
 """
@@ -32,6 +34,8 @@ from freebusy.parse import Email, parse_email, parse_instruction  # noqa: E402
 from freebusy.policy import Gate  # noqa: E402
 from freebusy.zones import detect_zone, label_for  # noqa: E402
 from freebusy import schemas  # noqa: E402
+from freebusy.chat import ChatDesk, ChatOutbox, RoutingMail, handle_chat  # noqa: E402
+from freebusy.runner import OwnerNotes, check_mail  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -122,20 +126,38 @@ def _build_runtime(ctx) -> dict:
     data = _data_dir(ctx)
     mode = _cfg(ctx, "mode", "fixture")
     dispatch = getattr(ctx, "dispatch_tool", None)
+    extra: dict = {}
+    mirror = None
     if mode == "fixture" or not _cfg(ctx, "owner_name", ""):
         profile, cal, mail, people = fx.profile(), fx.FixtureCalendar(), fx.FixtureMail(), fx.people()
         outbox = Outbox(data / "outbox.jsonl")             # fixture: reminders are recorded, never sent
+        mode = "fixture"                                     # also when a live mode is chosen but setup has no owner yet
+    elif mode == "connectors":
+        from freebusy.connect import build_connectors
+        from freebusy.adapters.routed import CalendarMirror
+        profile = _profile_from_config(ctx)
+        cal, inbox, _store = build_connectors(lambda k, d: _cfg(ctx, k, d), data)
+        if cal is None:
+            raise ValueError("connectors mode, but no calendar is chosen; run /freebusy connect you@example.com")
+        profile.write_calendar, profile.read_calendars = cal.write_calendar, list(cal.read_calendars)
+        chat_out = ChatOutbox()
+        mail, people = RoutingMail(inbox, chat_out), {}
+        outbox = HermesCron(dispatch) if dispatch else Outbox(data / "outbox.jsonl")
+        notes = OwnerNotes(data / "notes.jsonl", inbox)
+        mirror = CalendarMirror(cal, on_error=lambda what, exc: _RT.get("gate") and _RT["gate"].audit({"mirror": what, "error": str(exc)}))
+        extra = {"inbox": inbox, "chat_out": chat_out, "notes": notes,
+                 "desk": ChatDesk(dict(_cfg(ctx, "chat_contacts", {}) or {}), profile.agent_address)}
     else:
         profile = _profile_from_config(ctx)
         from freebusy.adapters.google_workspace import GoogleWorkspaceAdapter
         cal = GoogleWorkspaceAdapter(profile.write_calendar, profile.read_calendars)   # inert stub: every call raises
         mail, people = fx.FixtureMail(), {}   # mail transport is the next step; see README
         outbox = HermesCron(dispatch) if dispatch else Outbox(data / "outbox.jsonl")
-    ledger = HoldLedger(data / "holds.json", expiry_hours=profile.hold_expiry_hours, max_open=profile.max_open_holds)
+    ledger = HoldLedger(data / "holds.json", expiry_hours=profile.hold_expiry_hours, max_open=profile.max_open_holds, mirror=mirror)
     gate = Gate(profile, ledger, data / "audit.jsonl", vet_other_tools=bool(_cfg(ctx, "vet_other_tools", False)))
     sched = Scheduler(profile, cal, mail, ledger, gate, people, outbox=outbox)
     return {"profile": profile, "ledger": ledger, "gate": gate, "scheduler": sched, "mail": mail, "cal": cal, "data": data, "mode": mode,
-            "ctx": ctx, "outbox": outbox}
+            "ctx": ctx, "outbox": outbox, **extra}
 
 
 def _rt() -> dict:
@@ -454,6 +476,103 @@ def _cmd_zones(raw_args: str = "", **kwargs) -> str:
     return "\n".join(rows) or "no people yet"
 
 
+# ---- /freebusy: connectors -----------------------------------------------------------
+
+def _connect_flow():
+    from freebusy.connect import ConnectFlow
+    rt = _rt()
+    ctx = rt.get("ctx")
+    data = Path(rt.get("data") or _data_dir(ctx))
+    return ConnectFlow(data / "connect.json", lambda k, d: _cfg(ctx, k, d), lambda k, v: _set_cfg(ctx, k, v), data)
+
+
+def _rebuild() -> None:
+    global _RT
+    ctx = _RT.get("ctx")
+    try:
+        _RT = _build_runtime(ctx)
+    except Exception as exc:
+        logger.warning("freebusy: runtime rebuild failed, keeping the previous one: %s", exc)
+
+
+def _cmd_freebusy(raw_args: str = "", **kwargs) -> str:
+    rt = _rt()
+    ctx = rt.get("ctx")
+    raw = (raw_args or "").strip()
+    sub, _, rest = raw.partition(" ")
+    sub = sub.lower()
+    try:
+        if sub in ("", "help"):
+            return ("/freebusy connect you@example.com   connect a calendar and/or mailbox, one step per message\n"
+                    "/freebusy connect <answer>          answer the current step (connect alone repeats it)\n"
+                    "/freebusy doctor                    check servers, keychain, network rules; read, hold and remove one test hold\n"
+                    "/freebusy check                     handle new scheduling mail now (schedule this with Hermes cron if you like)\n"
+                    "/freebusy notes                     the latest notes for you")
+        if sub == "connect":
+            flow = _connect_flow()
+            out = flow.answer(rest) if rest else flow.current()
+            if out.startswith("Test:") and "Connected." in out:
+                _rebuild()                     # the test passed and mode is now connectors: switch over in this session
+            rt = _rt()
+            if rt.get("gate"):
+                rt["gate"].audit({"connect": flow.state.get("step"), "provider": flow.state.get("provider")})
+            return out
+        if sub == "doctor":
+            from freebusy.connect import doctor
+            return doctor(lambda k, d: _cfg(ctx, k, d), Path(rt.get("data") or _data_dir(ctx)))
+        if sub == "check":
+            if rt.get("mode") != "connectors":
+                return "connectors are not on; /freebusy connect you@example.com first"
+            return "\n".join(check_mail(rt["scheduler"], rt.get("inbox"), rt["notes"], _now()))
+        if sub == "notes":
+            notes = rt.get("notes")
+            items = notes.recent() if notes else []
+            return "\n\n".join(f"{n['at']}  {n['subject']}\n{n['text']}" for n in items) or "no notes"
+    except Exception as exc:
+        return f"freebusy {sub} could not finish: {exc}"
+    return "unknown subcommand; try /freebusy help"
+
+
+def _post_gateway_admission(session_key: str = "", platform: str = "", source: dict | None = None, message_id: str = "",
+                            text: str = "", **kwargs):
+    """Scheduling requests from the owner's chat contacts go through the engine; everything else passes to the agent."""
+    try:
+        rt = _rt()
+        if rt.get("mode") != "connectors" or not rt.get("desk") or not rt["desk"].contacts:
+            return None
+        return handle_chat(rt["scheduler"], rt["desk"], rt["chat_out"], str(platform or ""), dict(source or {}), str(text or ""),
+                           str(message_id or ""), _now(), rt["notes"])
+    except Exception as exc:  # fail open to the agent, but say so in the audit log
+        logger.debug("freebusy post_gateway_admission: %s", exc)
+        try:
+            _rt()["gate"].audit({"chat": platform, "error": str(exc)})
+        except Exception:
+            pass
+        return None
+
+
+def _cli_setup(parser) -> None:
+    sub = parser.add_subparsers(dest="freebusy_cmd")
+    pw = sub.add_parser("password", help="store an app password in the system keychain (asked without echo)")
+    pw.add_argument("connection", help="the connection id /freebusy connect showed, e.g. caldav:you@icloud.com")
+    fg = sub.add_parser("forget", help="remove a stored app password")
+    fg.add_argument("connection")
+
+
+def _cli_handler(args) -> int:
+    from freebusy import keychain
+    cmd = getattr(args, "freebusy_cmd", None)
+    if cmd == "password":
+        print(keychain.prompt_and_store(args.connection))
+        return 0
+    if cmd == "forget":
+        keychain.forget(args.connection)
+        print(f"Removed {args.connection} from the keychain, if it was there.")
+        return 0
+    print("usage: hermes freebusy password <connection id> | forget <connection id>")
+    return 2
+
+
 # ---- registration ---------------------------------------------------------------
 
 def register(ctx) -> None:
@@ -481,16 +600,24 @@ def register(ctx) -> None:
                 logger.warning("freebusy: could not register %s: %s", name, exc)
     if hasattr(ctx, "register_hook"):
         for hook, fn in (("pre_tool_call", _pre_tool_call), ("post_tool_call", _post_tool_call), ("pre_llm_call", _pre_llm_call),
-                         ("post_approval_response", _post_approval_response)):
+                         ("post_approval_response", _post_approval_response), ("post_gateway_admission", _post_gateway_admission)):
             try:
                 ctx.register_hook(hook, fn)
             except Exception as exc:
                 logger.warning("freebusy: could not register hook %s: %s", hook, exc)
     if hasattr(ctx, "register_command"):
         for name, fn, desc in (("schedule", _cmd_schedule, "Scheduling assistant: setup, groups, group, reminders, waiting, approve, <thread> <instruction>, demo"),
+                               ("freebusy", _cmd_freebusy, "Connectors: connect, doctor, check, notes"),
                                ("holds", _cmd_holds, "Open slot holds"), ("zones", _cmd_zones, "Stated time zones, or test a phrase")):
             try:
                 ctx.register_command(name, handler=fn, description=desc)
             except Exception as exc:
                 logger.warning("freebusy: could not register /%s: %s", name, exc)
+    if hasattr(ctx, "register_cli_command"):
+        try:
+            ctx.register_cli_command("freebusy", help="freebusy: keep an app password in the system keychain",
+                                     setup_fn=_cli_setup, handler_fn=_cli_handler,
+                                     description="hermes freebusy password <connection id> asks without echo and stores it in the keychain")
+        except Exception as exc:
+            logger.warning("freebusy: could not register the CLI command: %s", exc)
     logger.info("freebusy %s registered in %s mode", __version__, _RT.get("mode"))

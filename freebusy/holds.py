@@ -20,8 +20,9 @@ MAX_DAYS_PER_OFFER = 3
 
 
 class HoldLedger:
-    def __init__(self, path: Optional[Path] = None, expiry_hours: int = 48, max_open: int = 12):
+    def __init__(self, path: Optional[Path] = None, expiry_hours: int = 48, max_open: int = 12, mirror=None):
         self.path = Path(path) if path else None
+        self.mirror = mirror        # optional: on_add(hold) -> event id, on_remove(hold); see adapters/routed.CalendarMirror
         self.expiry_hours = expiry_hours
         self.max_open = max_open
         self.holds: list[Hold] = []
@@ -43,7 +44,13 @@ class HoldLedger:
         if gone:
             self.holds = [h for h in self.holds if h not in gone]
             self.save()
+            self._unmirror(gone)
         return gone
+
+    def _unmirror(self, gone: list[Hold]) -> None:
+        if self.mirror:
+            for h in gone:
+                self.mirror.on_remove(h)
 
     def open(self) -> list[Hold]:
         return list(self.holds)
@@ -79,6 +86,8 @@ class HoldLedger:
         hold = Hold(slot=slot, thread_id=thread_id, person_id=person_id,
                     expires=(now + timedelta(hours=self.expiry_hours)).isoformat(),
                     created=now.isoformat(), event_id=event_id)
+        if self.mirror and not hold.event_id:
+            hold.event_id = self.mirror.on_add(hold)
         self.holds.append(hold)
         self.save()
         return hold
@@ -99,6 +108,7 @@ class HoldLedger:
         gone = [h for h in self.holds if h.thread_id == thread_id and (keep is None or h.slot.key() != keep.key())]
         self.holds = [h for h in self.holds if h not in gone]
         self.save()
+        self._unmirror(gone)
         return gone
 
     def book(self, thread_id: str, slot: Slot) -> list[Hold]:

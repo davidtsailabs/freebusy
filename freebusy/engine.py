@@ -458,7 +458,9 @@ class Scheduler:
         self.pending.pop(req.thread_id, None)
         st.move(ThreadStatus.DONE.value, f"booked {booked.start} as {event_id}")
         when = f"{format_day(booked.start_dt(), self.profile.home_zone)} · {format_slot_for(booked.start_dt(), booked.end_dt(), self.profile.home_zone, person.zone)}"
-        reply = Reply(name=person.name.split()[0], lead=f"Booked: {when}. The invite is on its way.", owner_name=self.profile.name)
+        link = getattr(self.cal, "meeting_link", "")       # the owner's fixed video link, set at /freebusy connect
+        reply = Reply(name=person.name.split()[0], lead=f"Booked: {when}. The invite is on its way." + (f" Join: {link}" if link else ""),
+                      owner_name=self.profile.name)
         act = self._send(req, reply, [])
         act.reminders = self._remind(req, person, st, booked, event_id, thread, now, ours=True, agreed=agreed)
         note = OwnerNote(state="Booked", headline=f"{person.name}, {when}", who=person.name, when=when, ask="Nothing",
