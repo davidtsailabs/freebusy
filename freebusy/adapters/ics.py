@@ -16,6 +16,12 @@ from ..ontology import Slot
 
 _DUR = re.compile(r"^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$")
 PRODID = "-//freebusy//Hermes scheduling plugin 0.3//EN"
+HOLD_MARK = "X-FREEBUSY-HOLD"            # on every hold this plugin writes; with the UID prefix, how it knows its own
+HOLD_UID_PREFIX = "freebusy-hold-"
+
+
+def is_own_hold(props: dict) -> bool:
+    return HOLD_MARK in props or props.get("UID", ({}, ""))[1].strip().startswith(HOLD_UID_PREFIX)
 
 
 def unfold(text: str) -> list[str]:
@@ -121,8 +127,9 @@ def _overlaps(a: datetime, b: datetime, start: datetime, end: datetime) -> bool:
     return a < end and start < b
 
 
-def busy_from_events(text: str, start: datetime, end: datetime, zone: str) -> list[Slot]:
-    """Each blocking VEVENT reduced to start and end. Cancelled, transparent and all-day events are dropped.
+def busy_from_events(text: str, start: datetime, end: datetime, zone: str, skip_own_holds: bool = True) -> list[Slot]:
+    """Each blocking VEVENT reduced to start and end. Cancelled, transparent and all-day events are dropped, and so are
+    this plugin's own holds (marked, see ``vevent``): they block the slot for everyone else, not for freebusy itself.
 
     Recurring events are expected already expanded by the server (calendar-query with <C:expand>); a
     master that still carries an RRULE counts for its own first instance only.
@@ -131,6 +138,8 @@ def busy_from_events(text: str, start: datetime, end: datetime, zone: str) -> li
     for props in components(text, "VEVENT"):
         get = {n: (p, v) for n, p, v in props}
         if get.get("STATUS", ({}, ""))[1].strip().upper() == "CANCELLED":
+            continue
+        if skip_own_holds and is_own_hold(get):
             continue
         if get.get("TRANSP", ({}, "OPAQUE"))[1].strip().upper() == "TRANSPARENT":
             continue
@@ -191,14 +200,17 @@ def fold(line: str) -> str:
 
 def vevent(uid: str, slot: Slot, summary: str, description: str = "", url: str = "", tentative: bool = False,
            organizer: str = "", attendees: Iterable[str] = (), alarms_min: Iterable[int] = (), stamp: Optional[datetime] = None) -> list[str]:
-    """One VEVENT. A hold is TENTATIVE and TRANSPARENT, so the owner sees it but free/busy does not count it twice:
-    the ledger already keeps a held slot from being offered again."""
+    """One VEVENT. A hold is TENTATIVE and OPAQUE: it blocks the slot for every other reader (a colleague's free/busy
+    lookup, another booking tool), so a held slot is really held. It carries ``X-FREEBUSY-HOLD`` and a ``freebusy-hold-``
+    UID so freebusy's own reads leave it out; the ledger already keeps a held slot from being offered twice."""
     stamp = stamp or datetime.now(timezone.utc)
     lines = ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{utc_stamp(stamp)}",
              f"DTSTART:{utc_stamp(slot.start_dt())}", f"DTEND:{utc_stamp(slot.end_dt())}",
              f"SUMMARY:{escape(summary)}",
              f"STATUS:{'TENTATIVE' if tentative else 'CONFIRMED'}",
-             f"TRANSP:{'TRANSPARENT' if tentative else 'OPAQUE'}"]
+             "TRANSP:OPAQUE"]
+    if tentative:
+        lines.append(f"{HOLD_MARK}:1")
     if description:
         lines.append(f"DESCRIPTION:{escape(description)}")
     if url:
@@ -221,3 +233,25 @@ def calendar(events: list[list[str]], name: str = "") -> str:
         lines += ev
     lines.append("END:VCALENDAR")
     return "\r\n".join(fold(l) for l in lines) + "\r\n"
+
+
+def subtract(busy: list[Slot], remove: list[Slot]) -> list[Slot]:
+    """Busy periods minus the given intervals (for a free-busy reply, which cannot say which period is our own hold)."""
+    out = []
+    for b in busy:
+        pieces = [(b.start_dt(), b.end_dt())]
+        for r in remove:
+            ra, rb = r.start_dt(), r.end_dt()
+            nxt = []
+            for a, e in pieces:
+                if rb <= a or ra >= e:
+                    nxt.append((a, e))
+                    continue
+                if a < ra:
+                    nxt.append((a, ra))
+                if rb < e:
+                    nxt.append((rb, e))
+            pieces = nxt
+        tz = b.start_dt().tzinfo
+        out += [Slot(a.astimezone(tz).isoformat(), e.astimezone(tz).isoformat()) for a, e in pieces]
+    return out

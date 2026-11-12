@@ -1,7 +1,9 @@
 """CalDAV (RFC 4791): iCloud, Fastmail, Nextcloud, Zoho and any standard server, with an app password.
 
 Reading: a ``free-busy-query`` REPORT where the server supports it (the server
-sends back busy periods only). Where it does not, a ``calendar-query`` REPORT
+sends back busy periods only). On the hold calendar the events query comes first,
+so the plugin's own holds (OPAQUE, marked ``X-FREEBUSY-HOLD``) can be left out of
+its own busy time while they still block the slot for everyone else. Where it does not, a ``calendar-query`` REPORT
 with ``<C:expand>`` fetches the events and ``ics.busy_from_events`` reduces them
 to start and end inside this module, before anything is returned.
 
@@ -92,7 +94,8 @@ def events_query(start: datetime, end: datetime) -> bytes:
     return _xml('<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><c:calendar-data>'
                 f'<c:expand start="{s}" end="{e}"/><c:comp name="VCALENDAR"><c:comp name="VEVENT">'
                 '<c:prop name="DTSTART"/><c:prop name="DTEND"/><c:prop name="DURATION"/><c:prop name="TRANSP"/>'
-                '<c:prop name="STATUS"/><c:prop name="RRULE"/><c:prop name="RECURRENCE-ID"/></c:comp></c:comp>'
+                '<c:prop name="STATUS"/><c:prop name="RRULE"/><c:prop name="RECURRENCE-ID"/><c:prop name="UID"/>'
+                '<c:prop name="X-FREEBUSY-HOLD"/></c:comp></c:comp>'
                 '</c:calendar-data></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">'
                 f'<c:time-range start="{s}" end="{e}"/></c:comp-filter></c:comp-filter></c:filter></c:calendar-query>')
 
@@ -206,8 +209,21 @@ class CalDAVClient:
         return [c for c in cals if c.events]
 
     # -- busy -------------------------------------------------------------------------
-    def busy(self, cal_url: str, start: datetime, end: datetime, zone: str) -> list[Slot]:
+    def busy(self, cal_url: str, start: datetime, end: datetime, zone: str, own_holds: Optional[list[Slot]] = None) -> list[Slot]:
+        """Busy ranges for freebusy itself. ``own_holds`` is given for the hold calendar: there the events are fetched
+        so our own holds can be left out by marker and UID; if the server cannot answer that, a free-busy reply is used
+        with the ledger's held intervals subtracted (a free-busy reply cannot say which period is ours)."""
         start, end = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+        if own_holds is not None:
+            try:
+                return self._events_busy(cal_url, start, end, zone)
+            except CalDAVError as exc:
+                if "401" in str(exc):
+                    raise
+            status, _, text = self.request("REPORT", cal_url, freebusy_query(start, end), "1")
+            if status == 200 and ics.is_freebusy_reply(text):
+                return ics.subtract(ics.busy_from_freebusy(text, start, end, zone), own_holds)
+            raise CalDAVError(f"the hold calendar answered neither an events query nor a free-busy query ({status})")
         if self.fb_supported.get(cal_url, True):
             status, _, text = self.request("REPORT", cal_url, freebusy_query(start, end), "1")
             if status == 200 and ics.is_freebusy_reply(text):
@@ -216,6 +232,9 @@ class CalDAVClient:
             if status == 401:
                 raise CalDAVError("the server refused the user name or app password (401)")
             self.fb_supported[cal_url] = False          # not supported here: fetch and strip instead
+        return self._events_busy(cal_url, start, end, zone)
+
+    def _events_busy(self, cal_url: str, start: datetime, end: datetime, zone: str) -> list[Slot]:
         out: list[Slot] = []
         for _, resp in self._multistatus("REPORT", cal_url, events_query(start, end), "1"):
             data = self._ok_prop(resp).findtext("c:calendar-data", "", NS)

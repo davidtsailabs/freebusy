@@ -87,7 +87,7 @@ class FakeDAV:
         return [CalendarInfo("https://p42-caldav.icloud.com/123/calendars/home/", "Home", True),
                 CalendarInfo("https://p42-caldav.icloud.com/123/calendars/work/", "Work (shared)", False)]
 
-    def busy(self, url, a, b, zone):
+    def busy(self, url, a, b, zone, own_holds=None):
         return [Slot("2026-11-18T09:00:00-08:00", "2026-11-18T10:00:00-08:00")]
 
     def put_event(self, url, uid, body):

@@ -9,8 +9,9 @@ prefer it).
 Calendar references are ``<connection id>|<calendar url>``; ``local`` is the
 local hold store. The local store keeps its events in one JSON file and writes
 them out as an iCalendar feed file the owner can subscribe to in any calendar
-app. Holds are TENTATIVE and TRANSPARENT; booked events are CONFIRMED and count
-as busy.
+app. Holds are TENTATIVE and OPAQUE, so they block the slot for anyone else who
+reads the calendar or the feed; freebusy's own reads leave them out (by marker and
+UID, or by subtracting the ledger's held intervals). Booked events are CONFIRMED.
 """
 
 from __future__ import annotations
@@ -61,7 +62,7 @@ class LocalHoldStore:
 
     def add(self, slot: Slot, summary: str, description: str = "", url: str = "", tentative: bool = False,
             alarms: Optional[list[int]] = None) -> str:
-        eid = f"freebusy-{uuid.uuid4().hex}"
+        eid = f"{ics.HOLD_UID_PREFIX if tentative else 'freebusy-'}{uuid.uuid4().hex}"
         self.events.append({"id": eid, "start": slot.start, "end": slot.end, "summary": summary, "description": description,
                             "url": url, "tentative": tentative, "alarms": list(alarms or [])})
         self._save()
@@ -73,6 +74,7 @@ class LocalHoldStore:
 
     def busy(self, start: datetime, end: datetime) -> list[Slot]:
         win = Slot(start.isoformat(), end.isoformat())
+        # Freebusy's own read: its holds are left out here; the feed shows them as busy to everyone else.
         return [Slot(e["start"], e["end"]) for e in self.events if not e.get("tentative") and Slot(e["start"], e["end"]).overlaps(win)]
 
 
@@ -87,6 +89,7 @@ class RoutedCalendar:
         self.zone, self.store = zone, store
         self.meeting_link, self.organizer = meeting_link, organizer
         self.created: set[str] = set()
+        self.own_holds = lambda: []     # held intervals from the ledger; set by the plugin (see __init__._build_runtime)
 
     def _client(self, r: str) -> tuple[CalDAVClient, str]:
         conn, url = split_ref(r)
@@ -98,6 +101,8 @@ class RoutedCalendar:
         if calendar == LOCAL:
             return self.store.busy(start, end) if self.store else []
         client, url = self._client(calendar)
+        if calendar == self.write_calendar:
+            return client.busy(url, start, end, self.zone, own_holds=list(self.own_holds()))
         return client.busy(url, start, end, self.zone)
 
     def create_event(self, calendar: str, slot: Slot, title: str, attendees: list[str],
@@ -112,7 +117,7 @@ class RoutedCalendar:
             eid = self.store.add(slot, title, desc, link, tentative, alarms)
         else:
             client, url = self._client(calendar)
-            uid = f"freebusy-{uuid.uuid4().hex}"
+            uid = f"{ics.HOLD_UID_PREFIX if tentative else 'freebusy-'}{uuid.uuid4().hex}"
             body = ics.calendar([ics.vevent(uid, slot, title, desc, link, tentative, organizer=self.organizer,
                                             attendees=attendees, alarms_min=alarms)])
             eid = client.put_event(url, uid, body)

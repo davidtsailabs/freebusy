@@ -75,9 +75,9 @@ Run it again with another address to add a second account; the calendar list the
 
 Busy time is the union of every calendar you chose, across accounts. Holds and booked meetings go to exactly one place. The policy gate and the adapter both refuse any other calendar, and the adapter deletes only events the plugin created there.
 
-A hold is a TENTATIVE, TRANSPARENT event: you see it in your calendar, and it does not count twice against your free time (the hold ledger already keeps a held slot from being offered again). It disappears when the offer is booked, released or expires. A booked meeting is a normal busy event with the other person invited.
+A hold is a TENTATIVE event that shows as busy (OPAQUE), so the slot is really held: a colleague's free/busy lookup, Calendly or another booking tool sees it taken. Freebusy leaves its own holds out of its own busy time, so it never blocks itself: on the hold calendar it reads the events and skips the ones it marked (`X-FREEBUSY-HOLD` and a `freebusy-hold-` UID), and where a server can only answer a free-busy query it subtracts the intervals its hold ledger holds. It disappears when the offer is booked, released or expires. A booked meeting is a normal busy event with the other person invited.
 
-With `hold local`, the events live in `local-calendar.json` in the plugin's data folder and are written to `feed/freebusy.ics` on every change. Subscribe to that file in your calendar app (Apple Calendar: File, New Calendar Subscription, with the file's path), or serve it however you like. Booked meetings in the local store count as busy.
+With `hold local`, the events live in `local-calendar.json` in the plugin's data folder and are written to `feed/freebusy.ics` on every change. Subscribe to that file in your calendar app (Apple Calendar: File, New Calendar Subscription, with the file's path), or serve it however you like. Holds and booked meetings both show as busy in the feed; freebusy itself counts only the booked ones.
 
 ### Free/busy on CalDAV
 
@@ -287,6 +287,7 @@ tests/                 zones, holds, offer, parse, policy, end to end, handoff a
 - **No mail watcher of its own.** `/freebusy check` does one pass; schedule it with Hermes' cron to keep it going.
 - **Chat history is in memory.** A restart forgets earlier chat messages; holds and waiting requests in the ledger stay.
 - **Waiting requests live in memory.** A restart forgets what was waiting on you; the person's next message or your next cc picks the thread up again.
+- **A hold calendar that only answers free-busy queries** has the ledger's held intervals subtracted, so a real event someone adds inside a held interval stays hidden from freebusy until that hold ends. Servers that answer an events query (Radicale and the common providers) do not have this gap.
 - **A hold mirror that fails is logged, not retried.** The ledger hold still stands; `/freebusy doctor` shows whether writes work.
 - **Reminders in live mode are untested against a running Hermes.** The run-once job is created through `cronjob_manage` with an ISO time; the fixture outbox and a stubbed dispatch are what the tests cover.
 - **Parsing is rules, not a model.** Weekday plus clock time, lettered picks, a small city list, common abbreviations. "Tuesday 2:30" with no zone is left unplaced on purpose. Whether the owner's message is about the booking is also a word list, so an unusual phrasing can be read as social.

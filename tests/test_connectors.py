@@ -133,17 +133,30 @@ def test_freebusy_reply_periods():
     assert busy[1].end.startswith("2026-11-18T17:30")
 
 
-def test_holds_are_tentative_and_transparent_and_text_is_escaped():
+def test_holds_are_tentative_and_busy_to_others_but_not_to_freebusy():
     slot = Slot("2026-11-18T10:00:00-08:00", "2026-11-18T10:30:00-08:00")
     hold = ics.calendar([ics.vevent("u1", slot, "Hold; for, Lukas", tentative=True, organizer="d@x.example", attendees=["l@y.example"])])
-    assert "STATUS:TENTATIVE" in hold and "TRANSP:TRANSPARENT" in hold and "SUMMARY:Hold\\; for\\, Lukas" in hold
+    assert "STATUS:TENTATIVE" in hold and "TRANSP:OPAQUE" in hold and "X-FREEBUSY-HOLD:1" in hold and "SUMMARY:Hold\\; for\\, Lukas" in hold
     assert "ATTENDEE" not in hold                     # a hold never invites anyone
     real = ics.calendar([ics.vevent("u2", slot, "Dana and Lukas", url="https://meet.jit.si/x", organizer="d@x.example",
                                     attendees=["l@y.example"], alarms_min=[10])])
     real = "\n".join(ics.unfold(real))
     assert "DTSTART:20261118T180000Z" in real and "TRANSP:OPAQUE" in real and "mailto:l@y.example" in real and "TRIGGER:-PT10M" in real
     assert ics.busy_from_events(real, datetime(2026, 11, 18, tzinfo=UTC), datetime(2026, 11, 19, tzinfo=UTC), "UTC")
-    assert not ics.busy_from_events(hold, datetime(2026, 11, 18, tzinfo=UTC), datetime(2026, 11, 19, tzinfo=UTC), "UTC")
+    win = (datetime(2026, 11, 18, tzinfo=UTC), datetime(2026, 11, 19, tzinfo=UTC))
+    seen = ics.busy_from_events(hold, *win, "UTC", skip_own_holds=False)                    # an outside reader: busy
+    assert [(x.start_dt(), x.end_dt()) for x in seen] == [(slot.start_dt(), slot.end_dt())]
+    assert not ics.busy_from_events(hold, *win, "UTC")                                     # freebusy itself: not busy
+    by_uid = hold.replace("X-FREEBUSY-HOLD:1\r\n", "").replace("UID:u1", "UID:freebusy-hold-abc")
+    assert not ics.busy_from_events(by_uid, *win, "UTC")                                   # the UID alone is enough
+
+
+def test_subtracting_held_intervals_from_a_freebusy_reply():
+    z = "-08:00"
+    busy = [Slot(f"2026-11-18T09:00:00{z}", f"2026-11-18T12:00:00{z}"), Slot(f"2026-11-18T14:00:00{z}", f"2026-11-18T14:30:00{z}")]
+    holds = [Slot(f"2026-11-18T10:00:00{z}", f"2026-11-18T10:30:00{z}"), Slot(f"2026-11-18T14:00:00{z}", f"2026-11-18T14:30:00{z}")]
+    assert ics.subtract(busy, holds) == [Slot(f"2026-11-18T09:00:00{z}", f"2026-11-18T10:00:00{z}"),
+                                         Slot(f"2026-11-18T10:30:00{z}", f"2026-11-18T12:00:00{z}")]
 
 
 # ---- CalDAV on recorded replies ---------------------------------------------------------------
@@ -240,6 +253,30 @@ def test_the_password_is_not_sent_to_another_site(public_dns):
     assert "Authorization" not in rec.calls[0][2]
 
 
+FB_REPLY = ("BEGIN:VCALENDAR\r\nBEGIN:VFREEBUSY\r\nFREEBUSY:20261118T170000Z/20261118T200000Z\r\nEND:VFREEBUSY\r\nEND:VCALENDAR\r\n")
+HOLD_REPORT = _ms('<d:response><d:href>/123/calendars/home/freebusy-hold-1.ics</d:href><d:propstat><d:prop><c:calendar-data>'
+                  'BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:freebusy-hold-1\r\nDTSTART:20261118T180000Z\r\nDTEND:20261118T183000Z\r\n'
+                  'STATUS:TENTATIVE\r\nTRANSP:OPAQUE\r\nX-FREEBUSY-HOLD:1\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:real\r\n'
+                  'DTSTART:20261118T170000Z\r\nDTEND:20261118T173000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n'
+                  '</c:calendar-data></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>')
+
+
+def test_the_hold_calendar_leaves_out_our_own_holds_on_both_paths(public_dns):
+    a, b = datetime(2026, 11, 18, tzinfo=UTC), datetime(2026, 11, 19, tzinfo=UTC)
+    hold = Slot("2026-11-18T10:00:00-08:00", "2026-11-18T10:30:00-08:00")
+    url = "https://p42-caldav.icloud.com/123/calendars/home/"
+    rec = Recorded([(207, {}, HOLD_REPORT)])                                   # events query: skip by marker and UID
+    c = CalDAVClient("https://caldav.icloud.com/", "d", lambda: "pw", opener=rec)
+    assert c.busy(url, a, b, "America/Los_Angeles", own_holds=[hold]) == [Slot("2026-11-18T09:00:00-08:00", "2026-11-18T09:30:00-08:00")]
+    rec = Recorded([(501, {}, ""), (200, {}, FB_REPLY)])                         # free-busy only: subtract the ledger's holds
+    c = CalDAVClient("https://caldav.icloud.com/", "d", lambda: "pw", opener=rec)
+    assert c.busy(url, a, b, "America/Los_Angeles", own_holds=[hold]) == [
+        Slot("2026-11-18T09:00:00-08:00", "2026-11-18T10:00:00-08:00"), Slot("2026-11-18T10:30:00-08:00", "2026-11-18T12:00:00-08:00")]
+    rec = Recorded([(200, {}, FB_REPLY)])                                        # an outside reader of the same calendar: busy
+    c = CalDAVClient("https://caldav.icloud.com/", "d", lambda: "pw", opener=rec)
+    assert c.busy(url, a, b, "America/Los_Angeles") == [Slot("2026-11-18T09:00:00-08:00", "2026-11-18T12:00:00-08:00")]
+
+
 def test_wrong_password_and_missing_password(public_dns):
     c = CalDAVClient("https://caldav.example.org/dav/", "dana", lambda: "pw", opener=Recorded([(401, {}, "")]))
     with pytest.raises(CalDAVError, match="401"):
@@ -255,7 +292,8 @@ class FakeClient:
     def __init__(self, busy):
         self._busy, self.puts, self.deleted = busy, [], []
 
-    def busy(self, url, a, b, zone):
+    def busy(self, url, a, b, zone, own_holds=None):
+        self.own = own_holds
         return list(self._busy.get(url, []))
 
     def put_event(self, url, uid, body):
@@ -274,7 +312,7 @@ def test_read_many_hold_on_one_caldav(tmp_path):
                          organizer="dana@x.example")
     from freebusy.adapters.base import all_busy
     busy = all_busy(cal, datetime(2026, 11, 18, tzinfo=UTC), datetime(2026, 11, 19, tzinfo=UTC))
-    assert len(busy) == 2
+    assert len(busy) == 2 and b.own == [] and a.own is None          # own holds are passed for the hold calendar only
     slot = Slot("2026-11-19T10:00:00-08:00", "2026-11-19T10:30:00-08:00")
     eid = cal.create_event(cal.write_calendar, slot, "Dana and Lukas", ["lukas@z.example", "telegram.1@chat.invalid"])
     body = "\n".join(ics.unfold(b.puts[-1][2]))
@@ -298,6 +336,7 @@ def test_local_hold_store_and_its_feed(tmp_path):
     booked = cal.create_event(LOCAL, slot, "Dana and Lukas", ["l@x.example"], reminders=[{"method": "popup", "minutes": 10}])
     assert cal.free_busy(LOCAL, *win) == [slot]
     feed = (tmp_path / "feed" / "freebusy.ics").read_text()
+    assert len(ics.busy_from_events(feed, *win, "UTC", skip_own_holds=False)) == 2         # a subscriber sees both as busy
     assert feed.count("BEGIN:VEVENT") == 2 and "https://whereby.com/dana" in feed and "TRIGGER:-PT10M" in feed
     cal.delete_event(LOCAL, hold)
     assert (tmp_path / "feed" / "freebusy.ics").read_text().count("BEGIN:VEVENT") == 1

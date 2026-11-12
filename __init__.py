@@ -154,6 +154,8 @@ def _build_runtime(ctx) -> dict:
         mail, people = fx.FixtureMail(), {}   # mail transport is the next step; see README
         outbox = HermesCron(dispatch) if dispatch else Outbox(data / "outbox.jsonl")
     ledger = HoldLedger(data / "holds.json", expiry_hours=profile.hold_expiry_hours, max_open=profile.max_open_holds, mirror=mirror)
+    if mirror is not None:          # freebusy leaves its own holds out of its own busy time; everyone else sees them busy
+        cal.own_holds = lambda: [h.slot for h in ledger.open() if h.event_id]
     gate = Gate(profile, ledger, data / "audit.jsonl", vet_other_tools=bool(_cfg(ctx, "vet_other_tools", False)))
     sched = Scheduler(profile, cal, mail, ledger, gate, people, outbox=outbox)
     return {"profile": profile, "ledger": ledger, "gate": gate, "scheduler": sched, "mail": mail, "cal": cal, "data": data, "mode": mode,

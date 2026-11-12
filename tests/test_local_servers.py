@@ -102,7 +102,10 @@ def test_read_many_hold_on_one_against_radicale(tmp_path):
     slot = Slot("2026-11-24T10:00:00-08:00", "2026-11-24T10:30:00-08:00")
     hold = routed.create_event(work, slot, "Hold", [], tentative=True)
     win = (datetime(2026, 11, 24, tzinfo=timezone.utc), datetime(2026, 11, 25, tzinfo=timezone.utc))
-    assert routed.free_busy(work, *win) == []                        # transparent: seen by the owner, not busy
+    assert routed.free_busy(work, *win) == []                        # freebusy does not block itself on its own hold
+    outside = CalDAVClient(DAV, OWNER, lambda: "danapw")             # anyone else's free/busy lookup of that calendar
+    seen = outside.busy(_cal(cals, "work").url, *win, "America/Los_Angeles")
+    assert outside.fb_supported[_cal(cals, "work").url] is True and seen == [slot]     # the hold blocks the slot
     booked = routed.create_event(work, slot, "Dana and Lukas", [LUKAS])
     assert routed.free_busy(work, *win) == [slot]
     routed.delete_event(work, hold)
@@ -219,6 +222,12 @@ def test_offer_hold_and_book_over_imap_smtp_and_caldav(tmp_path, monkeypatch, lo
     holds = mod._RT["ledger"].open()
     assert holds and all(h.event_id for h in holds)
     assert len(set(_ics_files(work_url)) - before) == len(holds)     # every hold is a tentative event on the work calendar
+    now = datetime.now(timezone.utc)
+    outside = CalDAVClient(DAV, OWNER, lambda: "danapw").busy(work_url, now, now + timedelta(days=21), "America/Los_Angeles")
+    assert all(any(o.start_dt() == h.slot.start_dt() for o in outside) for h in holds)   # busy to everyone else
+    assert not any(
+        b.start_dt() == h.slot.start_dt() for b in mod._RT["cal"].free_busy(config["write_calendar"], now, now + timedelta(days=21))
+        for h in holds)                                                # but not to freebusy itself
 
     _send(LUKAS, [AGENT], [OWNER], f"Re: Intro {tag}", "B, ET\n\nLukas", f"<pick-{tag}@other.test>", refs=(intro,))
     time.sleep(0.5)
