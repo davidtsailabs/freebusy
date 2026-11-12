@@ -1,15 +1,15 @@
 name: freebusy
-version: 0.2.0
+version: 0.3.0
 manifest_version: 2
 api_version: 1
-description: "Email meeting scheduling that never reveals a calendar and never invents a time zone. Offers come from free/busy only, every slot is held before it is offered, and a time is never shown in a zone the other person did not give. Fixture mode needs no accounts."
+description: "Meeting scheduling by email or chat, on any calendar and mailbox, that never reveals a calendar and never invents a time zone. Offers come from free/busy only, every slot is held before it is offered, and a time is never shown in a zone the other person did not give. Connects over CalDAV and IMAP/SMTP with app passwords kept in the system keychain; fixture mode needs no accounts."
 author: David Tsai
 license: MIT
 kind: standalone
 platforms:
   - linux
   - macos
-tags: [scheduling, email, calendar, time-zones]
+tags: [scheduling, email, calendar, time-zones, caldav, imap, chat]
 requires_hermes: ">=0.22.5"
 provides_tools:
   - schedule_parse
@@ -23,14 +23,17 @@ provides_hooks:
   - post_tool_call
   - pre_llm_call
   - post_approval_response
+  - post_gateway_admission
 requires_env: []
+python_dependencies:
+  - "keyring>=25.7,<26"
 config_schema:
   mode:
     type: str
-    choices: [fixture, google_workspace]
+    choices: [fixture, connectors, google_workspace]
     default: fixture
     label: Adapter
-    description: "fixture runs on demo data and touches nothing. google_workspace is an inert stub in 0.2.0: it reads and writes nothing and every calendar call returns a not-wired error."
+    description: "fixture runs on demo data and touches nothing. connectors uses the calendars and mailbox set up with /freebusy connect (CalDAV, IMAP/SMTP, chat); /freebusy connect switches it on once its test passes. google_workspace is an inert stub until 0.4: it reads and writes nothing."
   owner_name:
     type: str
     default: ""
@@ -58,11 +61,33 @@ config_schema:
   write_calendar:
     type: str
     default: ""
-    description: "The one calendar the plugin may write to."
+    label: Where holds go
+    description: "The one calendar the plugin may write holds and bookings to (connection|calendar URL), or local: a hold store on this machine, exported as a calendar feed file you can subscribe to."
   read_calendars:
     type: list
     default: []
-    description: "Calendars read as free or busy only."
+    label: Calendars read for busy times
+    description: "Any number of calendars, across accounts, read as busy start and end times only."
+  connections:
+    type: dict
+    default: {}
+    label: Connections
+    description: "Set by /freebusy connect. Servers and user names only (CalDAV URL; IMAP and SMTP hosts and ports). App passwords are in the system keychain, never here."
+  mail_connection:
+    type: str
+    default: ""
+    label: Mailbox the assistant works from
+    description: "The id of an IMAP/SMTP connection. Blank: no mail connector."
+  meeting_link:
+    type: str
+    default: ""
+    label: Fixed meeting link
+    description: "An https link put on every meeting the assistant books, such as a Zoom personal room, Jitsi or Whereby. Blank for none."
+  chat_contacts:
+    type: dict
+    default: {}
+    label: Chat contacts
+    description: "People whose scheduling requests arrive over Hermes' chat channels, keyed platform:user_id (for example telegram:123456789), each with an email, a name, or {email, name, group}. Listing someone is your introduction. Everyone else, you included, talks to the agent as usual."
   groups:
     type: dict
     label: Groups
